@@ -7,7 +7,9 @@ from src.ranking import rank_candidates
 from src.reranking import rerank
 from src.evaluation import ndcg_at_k
 
-STARRED_IDS = [1, 3, 6]
+# Full reviewed list (43 candidates) — kept for reference:
+# STARRED_IDS = [1, 3, 6, 7, 9, 10, 14, 15, 17, 19, 21, 24, 25, 27, 28, 29, 30, 31, 33, 36, 37, 39, 40, 44, 46, 49, 50, 52, 53, 57, 58, 60, 62, 66, 72, 73, 75, 76, 79, 82, 97, 99, 100]
+STARRED_IDS = [3, 6, 17, 19, 31, 100]
 COLS = ["id", "job_title", "location", "connections_raw", "fit"]
 
 if __name__ == "__main__":

@@ -198,6 +198,7 @@ def embed_fasttext(df: pd.DataFrame) -> np.ndarray:
 # Note: loaded via gensim.downloader — uses _avg_keyed_vecs instead of _avg_word_vecs
 # because the downloaded model returns a bare KeyedVectors object (no .wv wrapper).
 def embed_glove(df: pd.DataFrame) -> np.ndarray:
+    import gensim.downloader as gensim_dl
     DIM = 100
     kv = gensim_dl.load("glove-wiki-gigaword-100")
     cand_embs = _avg_keyed_vecs(df["job_title_clean"].tolist(), kv, DIM)
@@ -285,6 +286,7 @@ def _get_tfidf(cands, targets):
 
 
 def _get_word2vec(cands, targets):
+    from gensim.models import Word2Vec
     DIM = 100
     corpus = [t.split() for t in cands + targets]
     model = Word2Vec(corpus, vector_size=DIM, window=5, min_count=1,
@@ -293,6 +295,7 @@ def _get_word2vec(cands, targets):
 
 
 def _get_fasttext(cands, targets):
+    from gensim.models import FastText
     DIM = 100
     corpus = [t.split() for t in cands + targets]
     model = FastText(corpus, vector_size=DIM, window=5, min_count=1,
@@ -301,6 +304,7 @@ def _get_fasttext(cands, targets):
 
 
 def _get_glove(cands, targets):
+    import gensim.downloader as gensim_dl
     DIM = 100
     kv = gensim_dl.load("glove-wiki-gigaword-100")
     return normalize(_avg_keyed_vecs(cands + targets, kv, DIM))

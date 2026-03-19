@@ -1,10 +1,9 @@
-import re
 import nltk
 nltk.download("stopwords", quiet=True)
 nltk.download("wordnet", quiet=True)
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
-from config import CONNECTIONS_MAX, TARGET_KEYWORDS
+from .config import CONNECTIONS_MAX, TARGET_KEYWORDS
 
 _STOP_WORDS = set(stopwords.words("english"))
 _LEMMATIZER = WordNetLemmatizer()

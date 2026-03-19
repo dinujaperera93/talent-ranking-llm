@@ -28,8 +28,6 @@ from sklearn.manifold import TSNE
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import normalize
-import gensim.downloader as gensim_dl
-from gensim.models import Word2Vec, FastText
 from sentence_transformers import SentenceTransformer
 
 from .config import TARGET_KEYWORDS, STARRED_IDS
@@ -122,6 +120,7 @@ def embed_tfidf(df: pd.DataFrame) -> np.ndarray:
 #   the structure of the phrase. "Manager Human Resources" would give the same vector.
 
 def embed_word2vec(df: pd.DataFrame) -> np.ndarray:
+    from gensim.models import Word2Vec
     DIM = 100
     all_texts = df["job_title_clean"].tolist() + TARGETS_CLEAN
     corpus = [t.split() for t in all_texts]
@@ -164,6 +163,7 @@ def embed_word2vec(df: pd.DataFrame) -> np.ndarray:
 #   they encode the full sentence context, not just a bag of word vectors.
 
 def embed_fasttext(df: pd.DataFrame) -> np.ndarray:
+    from gensim.models import FastText
     DIM = 100
     all_texts = df["job_title_clean"].tolist() + TARGETS_CLEAN
     corpus = [t.split() for t in all_texts]

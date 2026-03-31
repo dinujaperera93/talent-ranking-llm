@@ -86,6 +86,9 @@ def embed_tfidf(df: pd.DataFrame) -> np.ndarray:
     vec.fit(all_texts)
     cand_embs = vec.transform(df["job_title_clean"].tolist()).toarray()
     tgt_embs  = vec.transform(TARGETS_CLEAN).toarray()
+    # Parameters = one IDF weight per unique word in the vocabulary
+    vocab_size = len(vec.vocabulary_)
+    print(f"[TF-IDF]    vocab size: {vocab_size} words  →  each title is a {vocab_size}-dim vector  |  parameters: {vocab_size:,} IDF weights")
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
 
 
@@ -128,6 +131,10 @@ def embed_word2vec(df: pd.DataFrame) -> np.ndarray:
                      workers=4, epochs=100, seed=42)
     cand_embs = _avg_word_vecs(df["job_title_clean"].tolist(), model, DIM)
     tgt_embs  = _avg_word_vecs(TARGETS_CLEAN, model, DIM)
+    # Parameters = word embedding matrix (vocab × dim) × 2 (input + output weights)
+    vocab_size = len(model.wv)
+    params = vocab_size * DIM * 2
+    print(f"[Word2Vec]  vocab size: {vocab_size} words  ×  {DIM} dims  ×  2 matrices  |  parameters: {params:,}")
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
 
 
@@ -171,6 +178,11 @@ def embed_fasttext(df: pd.DataFrame) -> np.ndarray:
                      workers=4, epochs=100, seed=42)
     cand_embs = _avg_word_vecs(df["job_title_clean"].tolist(), model, DIM)
     tgt_embs  = _avg_word_vecs(TARGETS_CLEAN, model, DIM)
+    # Parameters = word vectors + character n-gram bucket vectors (both × dim)
+    vocab_size  = len(model.wv)
+    ngram_buckets = model.wv.vectors_ngrams.shape[0]
+    params = (vocab_size + ngram_buckets) * DIM * 2
+    print(f"[FastText]  vocab size: {vocab_size} words  +  {ngram_buckets} n-gram buckets  ×  {DIM} dims  ×  2 matrices  |  parameters: {params:,}")
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
 
 # GloVe (Global Vectors for Word Representation) is a pretrained word embedding model
@@ -197,12 +209,38 @@ def embed_fasttext(df: pd.DataFrame) -> np.ndarray:
 #
 # Note: loaded via gensim.downloader — uses _avg_keyed_vecs instead of _avg_word_vecs
 # because the downloaded model returns a bare KeyedVectors object (no .wv wrapper).
-def embed_glove(df: pd.DataFrame) -> np.ndarray:
+# GloVe fine-tuned with Mittens:
+# Mittens starts from the pretrained GloVe vectors and nudges them using
+# co-occurrence statistics computed from your corpus.
+# Words that appear together in your job titles pull closer in vector space.
+def embed_glove_finetuned(df: pd.DataFrame) -> np.ndarray:
+    from mittens import Mittens
+    from gensim.models import KeyedVectors
     import gensim.downloader as gensim_dl
+
     DIM = 100
-    kv = gensim_dl.load("glove-wiki-gigaword-100")
-    cand_embs = _avg_keyed_vecs(df["job_title_clean"].tolist(), kv, DIM)
-    tgt_embs  = _avg_keyed_vecs(TARGETS_CLEAN, kv, DIM)
+    corpus = df["job_title_clean"].tolist() + TARGETS_CLEAN
+
+    # Build co-occurrence matrix from your corpus
+    cv = TfidfVectorizer(use_idf=False, binary=True)
+    X  = cv.fit_transform(corpus)
+    Xc = (X.T @ X).toarray().astype(float)
+    vocab = cv.get_feature_names_out().tolist()
+
+    # Load pretrained GloVe as starting point
+    kv        = gensim_dl.load("glove-wiki-gigaword-100")
+    pretrained = {w: kv[w].tolist() for w in vocab if w in kv}
+
+    # Fine-tune: update vectors using your corpus co-occurrence
+    new_vecs = Mittens(n=DIM, max_iter=1000).fit(
+        Xc, vocab=vocab, initial_embedding_dict=pretrained
+    )
+
+    kv_ft = KeyedVectors(vector_size=DIM)
+    kv_ft.add_vectors(vocab, new_vecs)
+
+    cand_embs = _avg_keyed_vecs(df["job_title_clean"].tolist(), kv_ft, DIM)
+    tgt_embs  = _avg_keyed_vecs(TARGETS_CLEAN, kv_ft, DIM)
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
 
 
@@ -227,8 +265,23 @@ def embed_glove(df: pd.DataFrame) -> np.ndarray:
 #
 # Note: we encode raw TARGET_KEYWORDS (not TARGETS_CLEAN) because BERT handles
 # punctuation and casing internally — no preprocessing is needed.
-def embed_bert(df: pd.DataFrame) -> np.ndarray:
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+# BERT fine-tuned with unsupervised SimCSE:
+# Each sentence is paired with itself. The model sees the same sentence twice
+# but with different random dropout — producing two slightly different vectors.
+# It learns to pull these two views together and push other sentences apart.
+# No labels needed — the corpus itself is the training signal.
+def embed_bert_finetuned(df: pd.DataFrame) -> np.ndarray:
+    from sentence_transformers import InputExample, losses
+    from torch.utils.data import DataLoader
+
+    corpus = df["job_title_clean"].tolist() + TARGETS_CLEAN
+    model  = SentenceTransformer("all-MiniLM-L6-v2")
+
+    examples = [InputExample(texts=[s, s]) for s in corpus]
+    loader   = DataLoader(examples, shuffle=True, batch_size=16)
+    loss     = losses.MultipleNegativesRankingLoss(model)
+    model.fit(train_objectives=[(loader, loss)], epochs=5, show_progress_bar=False)
+
     cand_embs = model.encode(df["job_title_clean"].tolist(), show_progress_bar=False)
     tgt_embs  = model.encode(TARGET_KEYWORDS, show_progress_bar=False)
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
@@ -253,23 +306,37 @@ def embed_bert(df: pd.DataFrame) -> np.ndarray:
 # Advantage — strong out-of-the-box performance:
 #   E5 does not need to be fine-tuned on our data. The pretrained model already
 #   generalizes well to job title retrieval without any domain adaptation.
-def embed_e5(df: pd.DataFrame) -> np.ndarray:
-    model = SentenceTransformer("intfloat/e5-small-v2")
+# E5 fine-tuned with unsupervised SimCSE:
+# Same SimCSE approach as BERT above, but keeps the asymmetric
+# query/passage prefixes that E5 was originally trained with.
+def embed_e5_finetuned(df: pd.DataFrame) -> np.ndarray:
+    from sentence_transformers import InputExample, losses
+    from torch.utils.data import DataLoader
+
+    corpus = df["job_title_clean"].tolist() + TARGETS_CLEAN
+    model  = SentenceTransformer("intfloat/e5-small-v2")
+
+    examples = [InputExample(texts=[s, s]) for s in corpus]
+    loader   = DataLoader(examples, shuffle=True, batch_size=16)
+    loss     = losses.MultipleNegativesRankingLoss(model)
+    model.fit(train_objectives=[(loader, loss)], epochs=5, show_progress_bar=False)
+
     cand_texts = ["passage: " + t for t in df["job_title_clean"].tolist()]
     tgt_texts  = ["query: "   + t for t in TARGET_KEYWORDS]
-    cand_embs = model.encode(cand_texts, show_progress_bar=False)
-    tgt_embs  = model.encode(tgt_texts,  show_progress_bar=False)
+    cand_embs  = model.encode(cand_texts, show_progress_bar=False)
+    tgt_embs   = model.encode(tgt_texts,  show_progress_bar=False)
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
+
 
 
 # Registry used by main.py / analysis.py to iterate over all methods.
 METHODS = {
-    "TF-IDF":   embed_tfidf,
-    "Word2Vec": embed_word2vec,
-    "FastText": embed_fasttext,
-    "GloVe":    embed_glove,
-    "BERT":     embed_bert,
-    "E5-small": embed_e5,
+    "TF-IDF":         embed_tfidf,
+    "Word2Vec":       embed_word2vec,
+    "FastText":       embed_fasttext,
+    "GloVe-FT":       embed_glove_finetuned,
+    "BERT-FT":        embed_bert_finetuned,
+    "E5-small-FT":    embed_e5_finetuned,
 }
 
 
@@ -303,33 +370,55 @@ def _get_fasttext(cands, targets):
     return normalize(_avg_word_vecs(cands + targets, model, DIM))
 
 
-def _get_glove(cands, targets):
+def _get_glove_ft(cands, targets):
+    from mittens import Mittens
+    from gensim.models import KeyedVectors
     import gensim.downloader as gensim_dl
     DIM = 100
+    corpus = cands + targets
+    cv = TfidfVectorizer(use_idf=False, binary=True)
+    X  = cv.fit_transform(corpus)
+    Xc = (X.T @ X).toarray().astype(float)
+    vocab = cv.get_feature_names_out().tolist()
     kv = gensim_dl.load("glove-wiki-gigaword-100")
-    return normalize(_avg_keyed_vecs(cands + targets, kv, DIM))
+    pretrained = {w: kv[w].tolist() for w in vocab if w in kv}
+    new_vecs = Mittens(n=DIM, max_iter=1000).fit(Xc, vocab=vocab, initial_embedding_dict=pretrained)
+    kv_ft = KeyedVectors(vector_size=DIM)
+    kv_ft.add_vectors(vocab, new_vecs)
+    return normalize(_avg_keyed_vecs(corpus, kv_ft, DIM))
 
 
-def _get_bert(cands, targets):
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    return normalize(model.encode(cands + targets, show_progress_bar=False))
+def _get_bert_ft(cands, targets):
+    from sentence_transformers import InputExample, losses
+    from torch.utils.data import DataLoader
+    corpus = cands + targets
+    model  = SentenceTransformer("all-MiniLM-L6-v2")
+    loader = DataLoader([InputExample(texts=[s, s]) for s in corpus], shuffle=True, batch_size=16)
+    model.fit(train_objectives=[(loader, losses.MultipleNegativesRankingLoss(model))],
+              epochs=5, show_progress_bar=False)
+    return normalize(model.encode(corpus, show_progress_bar=False))
 
 
-def _get_e5(cands, targets):
-    model = SentenceTransformer("intfloat/e5-small-v2")
-    # Apply asymmetric prefixes: candidates are passages, targets are queries.
+def _get_e5_ft(cands, targets):
+    from sentence_transformers import InputExample, losses
+    from torch.utils.data import DataLoader
+    corpus = cands + targets
+    model  = SentenceTransformer("intfloat/e5-small-v2")
+    loader = DataLoader([InputExample(texts=[s, s]) for s in corpus], shuffle=True, batch_size=16)
+    model.fit(train_objectives=[(loader, losses.MultipleNegativesRankingLoss(model))],
+              epochs=5, show_progress_bar=False)
     texts = ["passage: " + t for t in cands] + ["query: " + t for t in targets]
     return normalize(model.encode(texts, show_progress_bar=False))
 
 
 # Internal registry for the visualization path — parallel to METHODS above.
 _VIZ_METHODS = {
-    "TF-IDF":   _get_tfidf,
-    "Word2Vec": _get_word2vec,
-    "FastText": _get_fasttext,
-    "GloVe":    _get_glove,
-    "BERT":     _get_bert,
-    "E5-small": _get_e5,
+    "TF-IDF":      _get_tfidf,
+    "Word2Vec":    _get_word2vec,
+    "FastText":    _get_fasttext,
+    "GloVe-FT":   _get_glove_ft,
+    "BERT-FT":    _get_bert_ft,
+    "E5-small-FT": _get_e5_ft,
 }
 
 
@@ -396,6 +485,99 @@ def _plot_grid(all_coords_2d, ids, n_targets, reducer_name, out_path):
     plt.close()
 
 
+def plot_all_scores(df: pd.DataFrame, scores_dict: dict, top_n: int = 10,
+                    out_path=None) -> None:
+    """Binary selection grid per method, highlighting recruiter-starred hits.
+
+    Cell colours:
+      dark green  = model selected this candidate AND recruiter starred them (true positive)
+      orange      = model selected this candidate but recruiter did NOT star them (false positive)
+      light blue  = model did NOT select this candidate
+
+    Left strip = recruiter ground truth (green = starred, light blue = not).
+    Rows sorted: candidates starred by recruiter first, then by times selected.
+    """
+    from matplotlib.colors import to_rgb
+
+    ids       = df["id"].tolist()
+    starred   = set(STARRED_IDS)
+    methods   = list(scores_dict.keys())
+    n_cands   = len(ids)
+    n_methods = len(methods)
+
+    # binary matrix: 1 if candidate is in top_n for that method
+    selected = np.zeros((n_cands, n_methods), dtype=int)
+    for j, method in enumerate(methods):
+        top_idx = np.argsort(scores_dict[method])[::-1][:top_n]
+        selected[top_idx, j] = 1
+
+    # sort: recruiter-starred rows first, then by times selected descending
+    is_starred     = np.array([1 if cid in starred else 0 for cid in ids])
+    times_selected = selected.sum(axis=1)
+    order          = np.lexsort((times_selected * -1, is_starred * -1))
+    sorted_ids      = [ids[i]      for i in order]
+    sorted_selected = selected[order]
+    sorted_starred  = [is_starred[i] for i in order]
+
+    # three-colour RGB grid
+    c_tp  = np.array(to_rgb(_COLORS["relevant"]))      # dark green  — true positive
+    c_fp  = np.array(to_rgb("#ff7f0e"))                # orange      — false positive
+    c_no  = np.array(to_rgb(_COLORS["non-relevant"]))  # light blue  — not selected
+    grid_rgb = np.zeros((n_cands, n_methods, 3))
+    for i, cid in enumerate(sorted_ids):
+        for j in range(n_methods):
+            if sorted_selected[i, j] == 1:
+                grid_rgb[i, j] = c_tp if cid in starred else c_fp
+            else:
+                grid_rgb[i, j] = c_no
+
+    row_h = 0.32
+    col_w = 1.2
+    fig, (ax_strip, ax_grid) = plt.subplots(
+        1, 2,
+        figsize=(n_methods * col_w + 2.5, n_cands * row_h + 2),
+        gridspec_kw={"width_ratios": [0.4, n_methods]},
+    )
+
+    # ── left strip: recruiter ground truth ───────────────────────────────────
+    strip_rgb = np.array([
+        [to_rgb(_COLORS["relevant"])] if s else [to_rgb(_COLORS["non-relevant"])]
+        for s in sorted_starred
+    ])
+    ax_strip.imshow(strip_rgb, aspect="auto")
+    ax_strip.set_xticks([0])
+    ax_strip.set_xticklabels(["Recruiter\nstarred"], fontsize=8, rotation=35, ha="right")
+    ax_strip.set_yticks(range(n_cands))
+    ax_strip.set_yticklabels(sorted_ids, fontsize=8)
+    ax_strip.set_ylabel("Candidate ID", fontsize=10)
+    ax_strip.tick_params(axis="x", length=0)
+
+    # ── selection grid ────────────────────────────────────────────────────────
+    ax_grid.imshow(grid_rgb, aspect="auto")
+    ax_grid.set_xticks(np.arange(-0.5, n_methods, 1), minor=True)
+    ax_grid.set_yticks(np.arange(-0.5, n_cands,   1), minor=True)
+    ax_grid.grid(which="minor", color="white", linewidth=1.0)
+    ax_grid.tick_params(which="minor", length=0)
+    ax_grid.set_xticks(range(n_methods))
+    ax_grid.set_xticklabels(methods, rotation=35, ha="right", fontsize=9)
+    ax_grid.set_yticks([])
+
+    legend = [
+        mpatches.Patch(color=_COLORS["relevant"],     label="Selected  +  recruiter starred (true positive)"),
+        mpatches.Patch(color="#ff7f0e",               label="Selected  but NOT starred (false positive)"),
+        mpatches.Patch(color=_COLORS["non-relevant"], label="Not selected"),
+    ]
+    fig.legend(handles=legend, loc="lower center", ncol=1,
+               bbox_to_anchor=(0.5, -0.04), fontsize=9)
+
+    plt.tight_layout()
+    if out_path is None:
+        out_path = ROOT / "all_scores.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {out_path}")
+    plt.close()
+
+
 def visualize(df: pd.DataFrame) -> None:
     """Produce PCA and t-SNE plots for all embedding methods.
 
@@ -428,9 +610,12 @@ def visualize(df: pd.DataFrame) -> None:
     print("Reducing with t-SNE (slower)...")
     # Perplexity must be < n_samples; cap at 30 (the typical default).
     perp = min(30, len(cands) // 3)
+    # max_iter was called n_iter before sklearn 1.5
+    import sklearn
+    tsne_iter_kwarg = "max_iter" if sklearn.__version__ >= "1.5" else "n_iter"
     tsne_coords = {
         name: TSNE(n_components=2, perplexity=perp, random_state=42,
-                   max_iter=1000, verbose=0).fit_transform(embs)
+                   **{tsne_iter_kwarg: 1000}, verbose=0).fit_transform(embs)
         for name, embs in high_dim.items()
     }
     _plot_grid(tsne_coords, ids, n_targets, "t-SNE (2D)", ROOT / "embedding_space_tsne.png")

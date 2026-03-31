@@ -4,11 +4,8 @@ CONNECTIONS_MAX = 500
 DISPLAY_COLS = ["id", "job_title", "connections_norm", "fit"]
 
 # Ground truth: candidates starred by the recruiter
-STARRED_IDS = [
-    1, 3, 6, 7, 9, 10, 14, 15, 17, 19, 21, 24, 25, 27, 28, 29, 30,
-    31, 33, 36, 37, 39, 40, 44, 46, 49, 50, 52, 53, 57, 58, 60, 62,
-    66, 72, 73, 75, 76, 79, 82, 97, 99, 100,
-]
+STARRED_IDS = [27, 28, 29, 30, 40, 10, 62, 53, 75, 97, 73, 58, 33, 17, 3,
+    21, 46, 99, 100, 24]
 
 # Embedding models
 BERT_MODEL = "all-MiniLM-L6-v2"

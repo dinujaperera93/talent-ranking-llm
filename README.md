@@ -52,7 +52,7 @@ A recruiter has a pool of candidates and two target search phrases:
 
 ---
 
-## 3. Project Pipeline — Step by Step
+## 3. Project Pipeline: Step by Step
 
 ```
 Raw CSV Data

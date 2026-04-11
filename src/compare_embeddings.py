@@ -17,7 +17,7 @@ For each method:
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 import numpy as np
 import pandas as pd
@@ -79,7 +79,6 @@ def _avg_keyed_vecs(texts: list[str], kv, vector_size: int) -> np.ndarray:
 #      the candidate is clearly relevant.
 #   2. Vocabulary mismatch: TF-IDF treats "HR" and "Human Resources" as unrelated,
 #      and "seek" and "seeking" as different even after lemmatization.
-
 def embed_tfidf(df: pd.DataFrame) -> np.ndarray:
     all_texts = df["job_title_clean"].tolist() + TARGETS_CLEAN
     vec = TfidfVectorizer()
@@ -121,7 +120,6 @@ def embed_tfidf(df: pd.DataFrame) -> np.ndarray:
 # Disadvantage — averaging destroys word order:
 #   The title "Human Resources Manager" is averaged into one vector, losing
 #   the structure of the phrase. "Manager Human Resources" would give the same vector.
-
 def embed_word2vec(df: pd.DataFrame) -> np.ndarray:
     from gensim.models import Word2Vec
     DIM = 100
@@ -136,6 +134,7 @@ def embed_word2vec(df: pd.DataFrame) -> np.ndarray:
     params = vocab_size * DIM * 2
     print(f"[Word2Vec]  vocab size: {vocab_size} words  ×  {DIM} dims  ×  2 matrices  |  parameters: {params:,}")
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
+
 
 
 # FastText is built on top of Word2Vec but adds character-level n-gram embeddings.
@@ -168,7 +167,6 @@ def embed_word2vec(df: pd.DataFrame) -> np.ndarray:
 #   will be nearly identical. FastText has no way to tell that one describes a job seeker
 #   and the other describes a recruiter. BERT-style models handle this better because
 #   they encode the full sentence context, not just a bag of word vectors.
-
 def embed_fasttext(df: pd.DataFrame) -> np.ndarray:
     from gensim.models import FastText
     DIM = 100
@@ -327,9 +325,6 @@ def embed_e5_finetuned(df: pd.DataFrame) -> np.ndarray:
     tgt_embs   = model.encode(tgt_texts,  show_progress_bar=False)
     return cosine_similarity(cand_embs, tgt_embs).max(axis=1)
 
-
-
-# Registry used by main.py / analysis.py to iterate over all methods.
 METHODS = {
     "TF-IDF":         embed_tfidf,
     "Word2Vec":       embed_word2vec,
@@ -338,7 +333,6 @@ METHODS = {
     "BERT-FT":        embed_bert_finetuned,
     "E5-small-FT":    embed_e5_finetuned,
 }
-
 
 # Full-embedding methods (for visualization only)
 # These mirror the ranking methods above but return the full normalized embedding
@@ -351,7 +345,6 @@ def _get_tfidf(cands, targets):
     vec.fit(cands + targets)
     return normalize(vec.transform(cands + targets).toarray())
 
-
 def _get_word2vec(cands, targets):
     from gensim.models import Word2Vec
     DIM = 100
@@ -360,7 +353,6 @@ def _get_word2vec(cands, targets):
                      workers=4, epochs=100, seed=42)
     return normalize(_avg_word_vecs(cands + targets, model, DIM))
 
-
 def _get_fasttext(cands, targets):
     from gensim.models import FastText
     DIM = 100
@@ -368,7 +360,6 @@ def _get_fasttext(cands, targets):
     model = FastText(corpus, vector_size=DIM, window=5, min_count=1,
                      workers=4, epochs=100, seed=42)
     return normalize(_avg_word_vecs(cands + targets, model, DIM))
-
 
 def _get_glove_ft(cands, targets):
     from mittens import Mittens
@@ -387,7 +378,6 @@ def _get_glove_ft(cands, targets):
     kv_ft.add_vectors(vocab, new_vecs)
     return normalize(_avg_keyed_vecs(corpus, kv_ft, DIM))
 
-
 def _get_bert_ft(cands, targets):
     from sentence_transformers import InputExample, losses
     from torch.utils.data import DataLoader
@@ -397,7 +387,6 @@ def _get_bert_ft(cands, targets):
     model.fit(train_objectives=[(loader, losses.MultipleNegativesRankingLoss(model))],
               epochs=5, show_progress_bar=False)
     return normalize(model.encode(corpus, show_progress_bar=False))
-
 
 def _get_e5_ft(cands, targets):
     from sentence_transformers import InputExample, losses
@@ -409,7 +398,6 @@ def _get_e5_ft(cands, targets):
               epochs=5, show_progress_bar=False)
     texts = ["passage: " + t for t in cands] + ["query: " + t for t in targets]
     return normalize(model.encode(texts, show_progress_bar=False))
-
 
 # Internal registry for the visualization path — parallel to METHODS above.
 _VIZ_METHODS = {
@@ -480,6 +468,7 @@ def _plot_grid(all_coords_2d, ids, n_targets, reducer_name, out_path):
     fig.legend(handles=_make_legend(), loc="lower center", ncol=3,
                bbox_to_anchor=(0.5, -0.02), fontsize=10)
     plt.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {out_path}")
     plt.close()
@@ -539,7 +528,7 @@ def plot_all_scores(df: pd.DataFrame, scores_dict: dict, top_n: int = 10,
         gridspec_kw={"width_ratios": [0.4, n_methods]},
     )
 
-    # ── left strip: recruiter ground truth ───────────────────────────────────
+    # left strip: recruiter ground truth
     strip_rgb = np.array([
         [to_rgb(_COLORS["relevant"])] if s else [to_rgb(_COLORS["non-relevant"])]
         for s in sorted_starred
@@ -552,7 +541,7 @@ def plot_all_scores(df: pd.DataFrame, scores_dict: dict, top_n: int = 10,
     ax_strip.set_ylabel("Candidate ID", fontsize=10)
     ax_strip.tick_params(axis="x", length=0)
 
-    # ── selection grid ────────────────────────────────────────────────────────
+    # selection grid
     ax_grid.imshow(grid_rgb, aspect="auto")
     ax_grid.set_xticks(np.arange(-0.5, n_methods, 1), minor=True)
     ax_grid.set_yticks(np.arange(-0.5, n_cands,   1), minor=True)
@@ -572,7 +561,7 @@ def plot_all_scores(df: pd.DataFrame, scores_dict: dict, top_n: int = 10,
 
     plt.tight_layout()
     if out_path is None:
-        out_path = ROOT / "all_scores.png"
+        out_path = ROOT / "outputs" / "all_scores.png"
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {out_path}")
     plt.close()
@@ -581,7 +570,7 @@ def plot_all_scores(df: pd.DataFrame, scores_dict: dict, top_n: int = 10,
 def visualize(df: pd.DataFrame) -> None:
     """Produce PCA and t-SNE plots for all embedding methods.
 
-    Saves two files to the project root:
+    Saves two files to outputs/:
       - embedding_space_pca.png   (fast, linear projection)
       - embedding_space_tsne.png  (slower, non-linear — better cluster separation)
 
@@ -605,7 +594,7 @@ def visualize(df: pd.DataFrame) -> None:
         name: PCA(n_components=2, random_state=42).fit_transform(embs)
         for name, embs in high_dim.items()
     }
-    _plot_grid(pca_coords, ids, n_targets, "PCA (2D)", ROOT / "embedding_space_pca.png")
+    _plot_grid(pca_coords, ids, n_targets, "PCA (2D)", ROOT / "outputs" / "embedding_space_pca.png")
 
     print("Reducing with t-SNE (slower)...")
     # Perplexity must be < n_samples; cap at 30 (the typical default).
@@ -618,4 +607,4 @@ def visualize(df: pd.DataFrame) -> None:
                    **{tsne_iter_kwarg: 1000}, verbose=0).fit_transform(embs)
         for name, embs in high_dim.items()
     }
-    _plot_grid(tsne_coords, ids, n_targets, "t-SNE (2D)", ROOT / "embedding_space_tsne.png")
+    _plot_grid(tsne_coords, ids, n_targets, "t-SNE (2D)", ROOT / "outputs" / "embedding_space_tsne.png")

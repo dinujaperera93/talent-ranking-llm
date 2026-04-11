@@ -227,7 +227,7 @@ visualize(df)
 # ### PCA — Linear projection (fast, shows global structure)
 
 # %%
-display(Image(filename=str(ROOT / "embedding_space_pca.png")))
+display(Image(filename=str(ROOT / "outputs" / "embedding_space_pca.png")))
 
 # %% [markdown]
 # ### t-SNE — Non-linear projection (slower, better cluster separation)
@@ -235,4 +235,4 @@ display(Image(filename=str(ROOT / "embedding_space_pca.png")))
 # Note: distances *between* clusters in t-SNE are not meaningful — only local neighbourhood structure is.
 
 # %%
-display(Image(filename=str(ROOT / "embedding_space_tsne.png")))
+display(Image(filename=str(ROOT / "outputs" / "embedding_space_tsne.png")))

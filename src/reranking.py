@@ -1,7 +1,6 @@
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 
-# Using the same sentence transformer model as feature_engineering for consistency.
 # Cosine similarity between all candidate titles and the starred candidate titles
 # gives a "similarity to what the recruiter liked" score, which is blended into fit.
 _MODEL = SentenceTransformer("all-MiniLM-L6-v2")

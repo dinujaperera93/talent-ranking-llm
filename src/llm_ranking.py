@@ -1,185 +1,180 @@
 """
-LLM-based candidate ranking using a small instruct model.
+LLM-based candidate ranking.
 
-The model scores each candidate's job title (0-10) based on HR fit.
-GenerationConfig is saved to models/qwen-ranking/generation_config.json
-so the same settings can be reloaded without re-specifying them.
+Instead of scoring candidates one-by-one, each prompting technique receives
+the full candidate list and is asked to directly rank the top 10.
+
+Techniques compared: Zero-shot, Few-shot, Chat format, Chain of Thought.
 """
 
 import os
 import re
-import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-# ── env & paths ───────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 HF_TOKEN = os.environ.get("HUGGING_FACE_API_KEY")
-
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
 GEN_CONFIG_DIR = ROOT / "models" / "qwen-ranking"
 
-# prompt options
-
-# --- Option 1: FEW-SHOT ---
-# Show the model input→output examples before the real question.
-# The model learns the expected format and score range from the examples.
-#
-# PROMPT_TEMPLATE = """Score a job title for Human Resources fit (0.0 to 1.0).
-#
-# Job title: Aspiring Human Resources Professional
-# Score: 1.0
-#
-# Job title: Software Engineer at Google
-# Score: 0.0
-#
-# Job title: Seeking Human Resources Opportunities
-# Score: 0.9
-#
-# Job title: {title}
-# Score:"""
+from .config import STARRED_IDS
 
 
-# --- Option 2: CHAT FORMAT ---
-# Pass few-shot examples as alternating user/assistant turns.
-# The model sees its own prior "replies", which strongly anchors the format.
-# Use with: tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-#
-# def build_chat_messages(title: str) -> list:
-#     return [
-#         {"role": "user",      "content": "Score for HR fit (0.0 to 1.0).\nJob title: Aspiring Human Resources Professional"},
-#         {"role": "assistant", "content": "1.0"},
-#         {"role": "user",      "content": "Score for HR fit (0.0 to 1.0).\nJob title: Software Engineer at Google"},
-#         {"role": "assistant", "content": "0.0"},
-#         {"role": "user",      "content": "Score for HR fit (0.0 to 1.0).\nJob title: Seeking Human Resources Opportunities"},
-#         {"role": "assistant", "content": "0.9"},
-#         {"role": "user",      "content": f"Score for HR fit (0.0 to 1.0).\nJob title: {title}"},
-#     ]
+# 1. Prompt builders (listwise)
+
+def _numbered_list(titles: list) -> str:
+    """Format titles as a numbered list for the prompt."""
+    return "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
 
 
-# --- Option 3: CHAIN OF THOUGHT ---
-# Ask the model to reason step-by-step before giving the final score.
-# Note: set max_new_tokens=150 to give room for the reasoning.
-#
-# PROMPT_TEMPLATE = """Score this job title for Human Resources fit (0.0 to 1.0).
-# Think step by step, then give the final score.
-#
-# Job title: {title}
-#
-# Step 1 - Does the title mention HR keywords (human resources, HR, talent, recruiting)?
-# Step 2 - Does it suggest the person is aspiring/seeking (not already senior)?
-# Step 3 - Based on steps 1-2, what decimal score (0.0 to 1.0) is appropriate?
-# Score:"""
-
-
-# --- ACTIVE PROMPT (simple baseline) ---
-# Plain instruction with output lead. Fast, no extra tokens.
-PROMPT_TEMPLATE = """Score from 0.0 to 1.0 how well this job title matches someone aspiring and seeking a human resources position.
-Reply with ONLY a decimal number (e.g. 0.85), nothing else.
-
-Job title: {title}
-Score:"""
-
-
-# generation config
-def _save_generation_config() -> GenerationConfig:
-    config = GenerationConfig(
-        max_new_tokens=10,  # enough for a decimal like "0.85"
-        do_sample=False,    # greedy — deterministic, reproducible scores
+def build_zero_shot(titles: list) -> str:
+    return (
+        f"Below are {len(titles)} job titles. Identify the top 10 candidates "
+        "most likely aspiring to a human resources position.\n"
+        "Reply with ONLY the candidate numbers in ranked order, comma-separated "
+        "(e.g. 3, 15, 7, ...).\n\n"
+        f"{_numbered_list(titles)}\n\n"
+        "Top 10 (best to worst):"
     )
+
+
+def build_few_shot(titles: list) -> str:
+    example = (
+        "Example — given this short list:\n"
+        "1. Aspiring Human Resources Professional\n"
+        "2. Software Engineer at Google\n"
+        "3. Seeking HR Opportunities\n"
+        "Answer: 1, 3\n\n"
+    )
+    return (
+        "Rank the top 10 candidates most suitable for a human resources role.\n"
+        "Reply with ONLY the candidate numbers in ranked order, comma-separated.\n\n"
+        f"{example}"
+        f"Now rank this list:\n{_numbered_list(titles)}\n\n"
+        "Top 10 (best to worst):"
+    )
+
+
+def build_chat_messages(titles: list) -> list:
+    return [
+        {"role": "user",      "content": "I will give you a list of job titles. Your job is to pick the top 10 most relevant for a human resources position and return their numbers in order."},
+        {"role": "assistant", "content": "Understood. Please share the list and I will return the top 10 candidate numbers in ranked order, comma-separated."},
+        {"role": "user",      "content": f"Here is the list:\n{_numbered_list(titles)}\n\nTop 10 (best to worst):"},
+    ]
+
+
+def build_cot(titles: list) -> str:
+    return (
+        f"Here are {len(titles)} job titles.\n\n"
+        f"{_numbered_list(titles)}\n\n"
+        "Step 1 — What keywords indicate an HR-aspiring candidate "
+        "(e.g. 'human resources', 'HR', 'aspiring', 'seeking')?\n"
+        "Step 2 — Scan the list and identify candidates with those keywords.\n"
+        "Step 3 — Rank the top 10 from best to worst match.\n\n"
+        "Final answer — top 10 candidate numbers, comma-separated:"
+    )
+
+
+# 2. Model loading
+
+def load_model():
+    """Load model & tokenizer, save GenerationConfig for later reuse."""
+    print(f"Loading {MODEL_ID}")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, padding_side="left")
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, token=HF_TOKEN, device_map="auto")
+
+    gen_config = GenerationConfig(do_sample=False, max_new_tokens=100)
     GEN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    config.save_pretrained(str(GEN_CONFIG_DIR))
-    print(f"GenerationConfig saved → {GEN_CONFIG_DIR / 'generation_config.json'}")
-    return config
+    gen_config.save_pretrained(str(GEN_CONFIG_DIR))
+    print(f"GenerationConfig saved: {GEN_CONFIG_DIR}")
+
+    model.eval()
+    return model, tokenizer
 
 
-def _load_generation_config() -> GenerationConfig:
-    """Load from JSON if it exists, otherwise create and save it."""
-    if (GEN_CONFIG_DIR / "generation_config.json").exists():
-        print(f"GenerationConfig loaded from {GEN_CONFIG_DIR}")
-        return GenerationConfig.from_pretrained(str(GEN_CONFIG_DIR))
-    return _save_generation_config()
+# 3. Inference
 
-
-# scoring
-def _score_title(model, tokenizer, gen_config, title: str) -> float:
-    prompt = PROMPT_TEMPLATE.format(title=title)
-    # apply Qwen chat template so instruct formatting is correct
-    messages = [{"role": "user", "content": prompt}]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+def _generate(model, tokenizer, messages, max_new_tokens=100):
+    """Send messages to the model and return the generated text."""
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    gen_config = GenerationConfig(do_sample=False, max_new_tokens=max_new_tokens)
     outputs = model.generate(**inputs, generation_config=gen_config)
-
-    # decode only the newly generated tokens (skip the prompt)
-    generated = tokenizer.decode(
-        outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-    )
-    match = re.search(r"\d+\.?\d*", generated)
-    score = float(match.group()) if match else 0.0
-    return min(max(score, 0.0), 1.0)
+    return tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
 
-# main ranking function
-def rank_with_llm(df):
-    """Return df sorted by LLM fit score (column `fit_llm`)."""
-    print(f"Loading {MODEL_ID} ...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, token=HF_TOKEN, device_map="auto"
-    )
-    gen_config = _load_generation_config()
+# 4. Run all techniques
+
+def rank_with_llm(df, model=None, tokenizer=None):
+    """Run each prompting technique once and return top-10 candidate IDs per technique."""
+    if model is None or tokenizer is None:
+        model, tokenizer = load_model()
 
     titles = df["job_title_clean"].tolist()
-    scores = []
-    for i, title in enumerate(titles, 1):
-        scores.append(_score_title(model, tokenizer, gen_config, title))
-        if i % 10 == 0:
-            print(f"  scored {i}/{len(titles)}")
+    ids    = df["id"].tolist()
+    results = {}
 
-    df = df.copy()
-    df["fit_llm"] = scores
-    return df.sort_values("fit_llm", ascending=False).reset_index(drop=True)
+    # Zero-shot
+    print("\n── Zero-shot ──")
+    raw = _generate(model, tokenizer, [{"role": "user", "content": build_zero_shot(titles)}])
+    print(f"  {raw[:120]}")
+    results["Zero-shot"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+
+    # Few-shot
+    print("\n── Few-shot ──")
+    raw = _generate(model, tokenizer, [{"role": "user", "content": build_few_shot(titles)}])
+    print(f"  {raw[:120]}")
+    results["Few-shot"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+
+    # Chat
+    print("\n── Chat ──")
+    raw = _generate(model, tokenizer, build_chat_messages(titles))
+    print(f"  {raw[:120]}")
+    results["Chat"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+
+    # Chain of Thought
+    print("\n── CoT ──")
+    raw = _generate(model, tokenizer, [{"role": "user", "content": build_cot(titles)}], max_new_tokens=300)
+    print(f"  {raw[:120]}")
+    results["CoT"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+
+    return results
 
 
-def plot_scores(df, out_path=None):
-    """Horizontal bar chart of LLM fit scores, colored by recruiter-starred status.
+# 5. Comparison chart
 
-    Same color scheme as the PCA/t-SNE plots:
-      green = recruiter-starred (relevant)
-      light blue = non-relevant
+def plot_scores(rankings: dict, out_path=None):
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    from .config import STARRED_IDS
+    Bar chart: how many recruiter-starred candidates each technique
+    found in its top 10 (higher = better).
+    """
+    starred = set(STARRED_IDS)
+    techniques = list(rankings.keys())
+    hits = [sum(1 for cid in rankings[t] if cid in starred) for t in techniques]
 
-    ranked = df.sort_values("fit_llm", ascending=True)  # ascending so top is at chart top
-    colors = ["#2ca02c" if cid in STARRED_IDS else "#aec7e8" for cid in ranked["id"]]
+    _, ax = plt.subplots(figsize=(7, 4))
+    bars = ax.bar(techniques, hits, color=["#4878cf", "#e8604c", "#6acc65", "#ce7e45"], alpha=0.85)
 
-    _, ax = plt.subplots(figsize=(8, max(6, len(ranked) * 0.18)))
-    ax.barh(range(len(ranked)), ranked["fit_llm"], color=colors)
-    ax.set_yticks(range(len(ranked)))
-    ax.set_yticklabels(
-        [t[:45] + "…" if len(t) > 45 else t for t in ranked["job_title_clean"]],
-        fontsize=7,
-    )
-    ax.set_xlabel("LLM fit score (0.0 – 1.0)")
-    ax.set_title(f"LLM Ranking — {MODEL_ID}", fontweight="bold")
-    ax.set_xlim(0, 1)
+    for bar, h in zip(bars, hits):
+        ax.text(bar.get_x() + bar.get_width() / 2, h + 0.05, str(h),
+                ha="center", va="bottom", fontweight="bold")
 
-    legend = [
-        mpatches.Patch(color="#2ca02c", label="Relevant candidate (starred)"),
-        mpatches.Patch(color="#aec7e8", label="Non-relevant candidate"),
-    ]
-    ax.legend(handles=legend, loc="lower right", fontsize=8)
+    ax.set_ylim(0, 10)
+    ax.axhline(10, color="grey", linestyle="--", linewidth=0.8, label="Max possible (10)")
+    ax.set_ylabel("Starred candidates found in top 10")
+    ax.set_title(f"Listwise Ranking — {MODEL_ID}", fontweight="bold")
+    ax.legend(fontsize=8)
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
 
     plt.tight_layout()
     if out_path is None:
-        out_path = ROOT / "llm_scores.png"
+        out_path = ROOT / "outputs" / "prompt_comparison.png"
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {out_path}")
     plt.close()

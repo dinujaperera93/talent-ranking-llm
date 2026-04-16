@@ -1,6 +1,6 @@
 # Talent Spotting & Candidate Ranking System
 
-> An end-to-end NLP pipeline that benchmarks six embedding strategies, from classical bag-of-words to fine-tuned transformers, augmented with a small language model scorer and a human-in-the-loop feedback mechanism, to automatically surface the most relevant HR candidates from a raw applicant pool.
+> An end-to-end NLP pipeline that benchmarks six embedding strategies — from classical bag-of-words to fine-tuned transformers — augmented with two large language models and a human-in-the-loop feedback mechanism, to automatically surface the most relevant HR candidates from a raw applicant pool.
 
 ---
 
@@ -14,15 +14,16 @@
    - [Step 3: Embedding and Similarity Scoring](#step-3-embedding-and-similarity-scoring)
    - [Step 4: Candidate Ranking](#step-4-candidate-ranking)
    - [Step 5: Re-ranking with Recruiter Feedback](#step-5-re-ranking-with-recruiter-feedback)
-   - [Step 6: LLM-based Scoring](#step-6-llm-based-scoring)
+   - [Step 6: LLM-based Listwise Ranking](#step-6-llm-based-listwise-ranking)
    - [Step 7: Evaluation](#step-7-evaluation)
-   - [Step 8: Visualization](#step-8-visualization)
+   - [Step 8: Candidate Comparison Table](#step-8-candidate-comparison-table)
 4. [Embedding Methods Compared](#4-embedding-methods-compared)
-5. [Key Design Decisions](#5-key-design-decisions)
-6. [Project Structure](#6-project-structure)
-7. [How to Run](#7-how-to-run)
-8. [Results and Visualizations](#8-results-and-visualizations)
-9. [Concluding Remarks for Hiring Managers and Recruiters](#9-concluding-remarks-for-hiring-managers-and-recruiters)
+5. [LLM Models Compared](#5-llm-models-compared)
+6. [Key Design Decisions](#6-key-design-decisions)
+7. [Project Structure](#7-project-structure)
+8. [How to Run](#8-how-to-run)
+9. [Results](#9-results)
+10. [Concluding Remarks for Hiring Managers and Recruiters](#10-concluding-remarks-for-hiring-managers-and-recruiters)
 
 ---
 
@@ -30,9 +31,9 @@
 
 This project builds an **intelligent candidate ranking system** for a real recruiting use case. Given a dataset of 104 candidates with free-text job titles and LinkedIn connection counts, the system automatically ranks them by how well they fit the profile of someone *aspiring to or seeking a Human Resources role*.
 
-The core contribution is a **systematic benchmark of six embedding strategies**, from TF-IDF to fine-tuned transformer models, implemented, compared, and evaluated against recruiter-provided ground truth. On top of that, the project integrates a 500M-parameter language model as an independent scorer and demonstrates a feedback-driven re-ranking loop that improves as recruiters interact with results.
+The core contribution is a **systematic benchmark of six embedding strategies** (TF-IDF to fine-tuned transformers) combined with **two LLMs across four prompting techniques**, all evaluated against recruiter-provided ground truth. A feedback-driven re-ranking loop improves results as recruiters interact with the system.
 
-Every hyperparameter in this pipeline was validated by grid search. Every design decision is justified in code comments and documentation. The result is not just a working system; it is a transparent, reproducible investigation into what makes NLP-based candidate ranking work in practice.
+Every hyperparameter in this pipeline was validated by grid search. Every design decision is justified in code comments and documentation.
 
 ---
 
@@ -64,12 +65,12 @@ Raw CSV Data
      │
      ▼
 ┌─────────────────┐
-│  Data Loading   │  load_data()
+│  Data Loading   │  data_loader.py
 └────────┬────────┘
          │
          ▼
 ┌─────────────────────────────┐
-│  Cleaning & Preprocessing   │  preprocess()
+│  Cleaning & Preprocessing   │  preprocessing.py
 │  - Clean job titles         │
 │  - Parse connection counts  │
 │  - Normalize connections    │
@@ -78,7 +79,7 @@ Raw CSV Data
              ▼
 ┌────────────────────────────────────────┐
 │  Embedding & Similarity Scoring        │  compare_embeddings.py
-│  (6 methods benchmarked in parallel)   │
+│  (6 methods benchmarked)               │
 │  TF-IDF → Word2Vec → FastText →        │
 │  GloVe-FT → BERT-FT → E5-small-FT     │
 └────────────┬───────────────────────────┘
@@ -98,16 +99,19 @@ Raw CSV Data
 └────────────┬─────────────────────────┘
              │
              ▼
-┌──────────────────────────────────────┐
-│  LLM Scoring                         │  llm_ranking.py
-│  Qwen2.5-0.5B-Instruct scores each   │
-│  title 0.0–1.0 for HR fit            │
-└────────────┬─────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  LLM Listwise Ranking                        │  llm_ranking.py
+│  Qwen2.5-0.5B  ×  4 prompting techniques    │
+│  Gemma-4-E2B-it  ×  4 prompting techniques  │
+│  Zero-shot | Few-shot | Chat | CoT           │
+└────────────┬─────────────────────────────────┘
              │
              ▼
 ┌──────────────────────────────────────┐
-│  Evaluation & Visualization          │  evaluation.py
-│  NDCG@k · PCA · t-SNE · Score Grid  │
+│  Candidate Comparison Table          │  visualisation.py
+│  14 columns × 10 rows                │
+│  (6 embedding + 8 LLM results)       │
+│  Saved to outputs/candidate_table.csv│
 └──────────────────────────────────────┘
 ```
 
@@ -126,8 +130,6 @@ The raw dataset (`data/PotentialTalents.csv`) contains 104 candidate records wit
 | `connection` | LinkedIn connection count (may include `"500+"`) |
 | `fit` | Target column; initially empty, filled by the pipeline |
 
-A single `load_data(path)` function reads the CSV into a pandas DataFrame. Keeping this stage isolated makes it trivial to swap in a different data source without touching any downstream logic.
-
 ---
 
 ### Step 2: Data Cleaning and Preprocessing
@@ -136,11 +138,9 @@ A single `load_data(path)` function reads the CSV into a pandas DataFrame. Keepi
 
 | Operation | Implementation detail |
 |---|---|
-| Job title cleaning | Preserved as-is; BERT and E5 handle casing and punctuation internally, and over-cleaning degrades transformer semantics |
+| Job title cleaning | Preserved as-is; BERT and E5 handle casing and punctuation internally |
 | Connection parsing | `"500+"` is capped at 500; invalid or missing values default to 0 |
 | Connection normalization | Linearly scaled to `[0, 1]` by dividing by 500 |
-
-`TARGETS_CLEAN`, the cleaned target phrases, is shared across all six embedding methods so every comparison uses an identical query.
 
 ---
 
@@ -148,14 +148,14 @@ A single `load_data(path)` function reads the CSV into a pandas DataFrame. Keepi
 
 **File:** `src/compare_embeddings.py`
 
-The analytical core of the project. Each of the six methods follows an identical contract:
+Each of the six methods follows an identical contract:
 
-1. Embed all candidate job titles, producing a matrix of shape `(104 × dim)`
-2. Embed the two target keywords, producing a matrix of shape `(2 × dim)`
+1. Embed all candidate job titles → matrix `(104 × dim)`
+2. Embed the two target keywords → matrix `(2 × dim)`
 3. Compute cosine similarity between every candidate and every target
 4. Score = **MAX** similarity across both targets
 
-Using MAX rather than average ensures that a candidate title containing one highly relevant phrase is not penalized for surrounding context. This produces a single scalar `fit` score per candidate for each method, enabling a direct, fair comparison across all six approaches.
+Using MAX ensures a candidate with one highly relevant phrase is not penalized for surrounding context.
 
 ---
 
@@ -163,13 +163,11 @@ Using MAX rather than average ensures that a candidate title containing one high
 
 **File:** `src/ranking.py`
 
-Raw similarity is blended with network strength into a single fit score:
-
 ```
 fit = 0.7 × title_similarity + 0.3 × connections_norm
 ```
 
-The `0.7 / 0.3` split was confirmed optimal by grid search. Title relevance dominates; connections act as a principled tie-breaker rather than a dominant factor.
+The `0.7 / 0.3` split was confirmed optimal by grid search. Title relevance dominates; connections act as a principled tie-breaker.
 
 ---
 
@@ -177,32 +175,43 @@ The `0.7 / 0.3` split was confirmed optimal by grid search. Title relevance domi
 
 **File:** `src/reranking.py`
 
-When a recruiter stars candidates they approve of, those selections become a live feedback signal. The re-ranker:
+When a recruiter stars candidates they approve of, those selections become a live feedback signal:
 
-1. Encodes all titles and all starred titles using `all-MiniLM-L6-v2`
-2. Computes each candidate's mean cosine similarity to the starred set
-3. Blends into the existing fit score:
+1. Encode all titles and all starred titles using `all-MiniLM-L6-v2`
+2. Compute each candidate's mean cosine similarity to the starred set
+3. Blend into the existing fit score:
 
 ```
 fit_new = (1 - α) × fit_old + α × starred_similarity     [α = 0.9]
 ```
 
-`α = 0.9` was validated by grid search: once recruiter feedback is available, it is a far stronger signal than the original blended score. This module demonstrates a **human-in-the-loop** design pattern; the system improves continuously as recruiters interact with it.
+`α = 0.9` was validated by grid search.
 
 ---
 
-### Step 6: LLM-based Scoring
+### Step 6: LLM-based Listwise Ranking
 
 **File:** `src/llm_ranking.py`
 
-`Qwen2.5-0.5B-Instruct` (500M parameters) scores each job title independently of the embedding pipeline:
+Instead of scoring candidates one-by-one, the full candidate list is given to the model and it is asked to directly select the top 10 HR-relevant candidates. Two models are compared across four prompting techniques:
 
-- **Prompt strategy (zero-shot):** *"Score from 0.0 to 1.0 how well this job title matches someone aspiring and seeking a human resources position."*
-- **Decoding:** Greedy (`do_sample=False`), ensuring deterministic, reproducible scores
-- **Output parsing:** Regex extracts the decimal score; result clamped to `[0.0, 1.0]`
-- **Config persistence:** `GenerationConfig` serialized to `models/qwen-ranking/generation_config.json`
+**Models:**
 
-Three prompt strategies were explored and documented in code: zero-shot, few-shot, and chain-of-thought, with zero-shot selected as the cleanest baseline. This section demonstrates practical LLM integration: prompt engineering, chat template formatting, generation config management, and output parsing.
+| Model | Parameters | Memory (bfloat16) |
+|---|---|---|
+| `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | ~1 GB |
+| `google/gemma-4-E2B-it` | ~2.3B effective / 5.1B total | ~15 GB |
+
+**Prompting techniques:**
+
+| Technique | Description |
+|---|---|
+| Zero-shot | Plain instruction, no examples |
+| Few-shot | Small worked example shown before the question |
+| Chat | Framed as a user ↔ assistant conversation |
+| CoT | Model reasons step-by-step before answering |
+
+Models are loaded and unloaded sequentially to stay within CPU RAM. Output is parsed with regex; responses with fewer than 10 valid numbers are padded with `None`.
 
 ---
 
@@ -210,100 +219,113 @@ Three prompt strategies were explored and documented in code: zero-shot, few-sho
 
 **File:** `src/evaluation.py`
 
-Rankings are evaluated with **NDCG@k** (Normalized Discounted Cumulative Gain), the standard information retrieval metric for ranked lists:
+Rankings are evaluated with **NDCG@k** (Normalized Discounted Cumulative Gain):
 
 ```
 DCG@k  = Σ(i=1 to k)  relevance_i / log₂(i + 2)
-IDCG@k = DCG of the perfect ranking (all 20 starred candidates in positions 1-20)
+IDCG@k = DCG of the perfect ranking (all 20 starred candidates in positions 1–20)
 NDCG@k = DCG@k / IDCG@k          (range: 0.0 to 1.0)
 ```
 
-A score of 1.0 means every recruiter-starred candidate appeared in the top results. NDCG captures rank position: burying a relevant candidate at position 40 is penalized more than placing it at position 21.
-
 ---
 
-### Step 8: Visualization
+### Step 8: Candidate Comparison Table
 
-**File:** `src/compare_embeddings.py`, functions `visualize()` and `plot_all_scores()`
+**File:** `src/visualisation.py`
 
-| Output | What it shows |
+Produces a **14-column × 10-row DataFrame** showing the top-10 candidate IDs selected by each method:
+
+| Columns | Source |
 |---|---|
-| `embedding_space_pca.png` | PCA 2D projection of all six embedding spaces; reveals global structure and how well each method clusters relevant candidates near the target keywords |
-| `embedding_space_tsne.png` | t-SNE 2D projection; reveals local cluster quality and how tightly relevant candidates group together |
-| `all_scores.png` | Binary selection grid: 6 method columns by 104 candidate rows, color-coded as TP (green), FP (orange), or not selected (blue) |
+| TF-IDF, Word2Vec, FastText, GloVe-FT, BERT-FT, E5-small-FT | Embedding similarity + connections blend |
+| Qwen-Zero-shot, Qwen-Few-shot, Qwen-Chat, Qwen-CoT | Qwen2.5-0.5B-Instruct |
+| Gemma-Zero-shot, Gemma-Few-shot, Gemma-Chat, Gemma-CoT | Gemma-4-E2B-it |
 
-Color scheme across all plots: **green** = recruiter-starred candidate, **light blue** = not relevant, **red star** = target keyword.
+Saved to `outputs/candidate_table.csv`.
 
 ---
 
 ## 4. Embedding Methods Compared
 
-| Method | Corpus | Vector dim | Parameters | Key characteristic |
-|---|---|---|---|---|
-| **TF-IDF** | Our data only | ~312 (vocab size) | 312 IDF weights | Bag-of-words; penalizes long titles; cannot handle synonyms |
-| **Word2Vec** | Our data only | 100 | ~62,400 | Dense word semantics; corpus too small to learn meaningful HR relationships |
-| **FastText** | Our data only | 100 | ~400M | Subword n-grams handle morphological variants; still bottlenecked by a ~100-title corpus |
-| **GloVe + Mittens** | Wikipedia + fine-tuned | 100 | ~40M | Pretrained global co-occurrences, nudged toward job-title vocabulary via Mittens |
-| **BERT + SimCSE** | Pretrained + fine-tuned | 384 | 22.7M | Full sentence context via self-attention; domain-adapted with unsupervised SimCSE |
-| **E5-small + SimCSE** | Pretrained + fine-tuned | 384 | 33.4M | Retrieval-optimized; asymmetric `query:` / `passage:` encoding designed for IR tasks |
-
-**Key takeaway:** More parameters do not guarantee better results. FastText has 400M+ parameters yet performs poorly because it was trained on only ~100 job titles. BERT and E5 are smaller but consistently outperform classical methods because their parameters encode knowledge from billions of sentences.
+| Method | Corpus | Vector dim | Key characteristic |
+|---|---|---|---|
+| **TF-IDF** | Our data only | ~312 | Bag-of-words; cannot handle synonyms |
+| **Word2Vec** | Our data only | 100 | Dense word semantics; small corpus limits quality |
+| **FastText** | Our data only | 100 | Subword n-grams; still bottlenecked by ~100-title corpus |
+| **GloVe + Mittens** | Wikipedia + fine-tuned | 100 | Pretrained co-occurrences, nudged toward job-title vocabulary |
+| **BERT + SimCSE** | Pretrained + fine-tuned | 384 | Full sentence context; domain-adapted with SimCSE |
+| **E5-small + SimCSE** | Pretrained + fine-tuned | 384 | Retrieval-optimized; asymmetric query/passage encoding |
 
 ---
 
-## 5. Key Design Decisions
+## 5. LLM Models Compared
+
+| Model | Size | Prompting | Notes |
+|---|---|---|---|
+| `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | Zero-shot, Few-shot, Chat, CoT | Lightweight; tends to default to sequential output on small models |
+| `google/gemma-4-E2B-it` | 2.3B eff / 5.1B total | Zero-shot, Few-shot, Chat, CoT | Stronger instruction following; fits in ~15 GB bfloat16 on CPU |
+
+---
+
+## 6. Key Design Decisions
 
 | Decision | Rationale |
 |---|---|
-| SimCSE fine-tuning for BERT and E5 | Domain-adapts pretrained transformers without any labelled data; each sentence is its own positive pair under different dropout masks |
-| Mittens fine-tuning for GloVe | Bridges the Wikipedia-to-job-title vocabulary gap at very low compute cost, without full retraining |
-| MAX cosine similarity (not average) | A candidate with one highly relevant phrase in a long title should not be penalized; MAX captures the best-matching alignment with either target keyword |
-| `w = 0.7` for ranking blend | Grid-search validated; title relevance dominates, connections provide a meaningful but secondary signal |
-| `α = 0.9` for re-ranking blend | Grid-search validated; starred-candidate similarity is the dominant signal once recruiter feedback is available |
-| Greedy decoding for LLM scorer | Ensures identical inputs always produce identical scores, essential for fair benchmarking |
-| NDCG@k for evaluation | Standard IR metric; accounts for rank position, not just presence in the top-k set |
+| SimCSE fine-tuning for BERT and E5 | Domain-adapts pretrained transformers without labelled data |
+| Mittens fine-tuning for GloVe | Bridges the Wikipedia-to-job-title vocabulary gap at low compute cost |
+| MAX cosine similarity (not average) | Prevents long titles from diluting a single highly relevant phrase |
+| `w = 0.7` for ranking blend | Grid-search validated; title relevance dominates over connections |
+| `α = 0.9` for re-ranking blend | Grid-search validated; starred-candidate similarity is the dominant signal |
+| Listwise LLM ranking | More natural than pointwise scoring; models the full ranking task directly |
+| Sequential model loading | Qwen unloaded before Gemma loads to stay within CPU RAM budget |
+| `_parse_ids` padding to 10 | Ensures DataFrame consistency when a model returns fewer than 10 valid IDs |
+| Greedy decoding | Ensures deterministic, reproducible rankings across runs |
 
 ---
 
-## 6. Project Structure
+## 7. Project Structure
 
 ```
 .
-├── main.py                    # Entry point: runs the full pipeline end-to-end
+├── main.py                     # Entry point: runs the full pipeline
+├── requirements.toml           # All dependencies with version pins
 ├── data/
-│   └── PotentialTalents.csv   # Raw candidate dataset (104 records)
+│   └── PotentialTalents.csv    # Raw candidate dataset (104 records)
 ├── models/
-│   └── qwen-ranking/
-│       └── generation_config.json   # Serialized LLM generation config
+│   ├── qwen2.5-0.5b-instruct-ranking/
+│   │   └── generation_config.json
+│   └── gemma-4-e2b-it-ranking/
+│       └── generation_config.json
 ├── outputs/
 │   ├── embedding_space_pca.png
 │   ├── embedding_space_tsne.png
-│   └── all_scores.png
+│   └── candidate_table.csv     # 14-column comparison table
 ├── src/
-│   ├── config.py              # Central config: file paths, model IDs, hyperparameters, ground truth
-│   ├── data_loader.py         # CSV ingestion
-│   ├── preprocessing.py       # Title cleaning, connection parsing and normalization
-│   ├── compare_embeddings.py  # All 6 embedding methods + PCA/t-SNE visualizations
-│   ├── ranking.py             # Blended fit scoring (title similarity + connections)
-│   ├── reranking.py           # Human-in-the-loop re-ranking via recruiter feedback
-│   ├── llm_ranking.py         # Qwen2.5-0.5B-Instruct scorer
-│   ├── evaluation.py          # NDCG@k evaluation metric
-│   └── analysis.py            # Notebook-friendly analysis helpers
+│   ├── config.py               # Paths, model IDs, hyperparameters, ground truth
+│   ├── data_loader.py          # CSV ingestion
+│   ├── preprocessing.py        # Title cleaning, connection parsing and normalization
+│   ├── compare_embeddings.py   # All 6 embedding methods + PCA/t-SNE visualizations
+│   ├── ranking.py              # Blended fit scoring (title similarity + connections)
+│   ├── reranking.py            # Human-in-the-loop re-ranking via recruiter feedback
+│   ├── llm_ranking.py          # LLM listwise ranking (Qwen + Gemma, 4 prompt techniques)
+│   ├── visualisation.py        # Candidate comparison table (14 columns × 10 rows)
+│   ├── evaluation.py           # NDCG@k evaluation metric
+│   └── analysis.py             # Jupytext notebook source
 └── notebooks/
-    └── analysis.ipynb         # Interactive exploration and result inspection
+    └── analysis.ipynb          # Interactive exploration and result inspection
 ```
 
 ---
 
-## 7. How to Run
+## 8. How to Run
 
 **1. Install dependencies**
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.toml
 ```
 
-**2. Set your Hugging Face token** (required for Qwen model download)
+**2. Set your Hugging Face token** (required for Gemma model download)
 
 ```bash
 echo "HUGGING_FACE_API_KEY=your_token_here" > .env
@@ -317,14 +339,20 @@ python main.py
 
 This will:
 - Load and preprocess the 104-candidate dataset
-- Run all six embedding methods and print the top-10 candidates for each
-- Generate PCA and t-SNE embedding space visualizations
-- Run the Qwen LLM scorer and produce a score bar chart
-- Generate the all-methods binary selection comparison grid
+- Run all six embedding methods
+- Load Qwen2.5-0.5B → run 4 prompting techniques → unload
+- Load Gemma-4-E2B-it → run 4 prompting techniques → unload
+- Print and save the 14-column candidate comparison table to `outputs/candidate_table.csv`
+
+**4. Open the notebook**
+
+```bash
+jupyter notebook notebooks/analysis.ipynb
+```
 
 ---
 
-## 8. Results and Visualizations
+## 9. Results
 
 ### Embedding Space: PCA
 ![PCA](outputs/embedding_space_pca.png)
@@ -332,39 +360,30 @@ This will:
 ### Embedding Space: t-SNE
 ![t-SNE](outputs/embedding_space_tsne.png)
 
-### All Methods: Score Comparison Grid
-![All Scores](outputs/all_scores.png)
+### Candidate Comparison Table
 
-> **Green:** model selected the candidate AND recruiter starred them (true positive)
-> **Orange:** model selected the candidate but recruiter did NOT star them (false positive)
-> **Blue:** candidate not selected by this method
+The table (`outputs/candidate_table.csv`) shows the top-10 candidate IDs selected by each of the 14 methods side by side, enabling direct comparison of which candidates each approach surfaces and where they agree or diverge.
 
 ---
 
-## 9. Concluding Remarks for Hiring Managers and Recruiters
+## 10. Concluding Remarks for Hiring Managers and Recruiters
 
-### What this project demonstrates
+This is an **original end-to-end NLP engineering investigation**, covering the full machine learning development lifecycle with deliberate, documented decisions at every stage.
 
-This is an **original end-to-end NLP engineering investigation**, not a tutorial or course reproduction. It covers the full machine learning development lifecycle with deliberate, documented decisions at every stage.
+**Comparative analysis across eight models.** Six embedding methods and two LLMs (each tested with four prompting techniques) are benchmarked systematically, not just implemented. Each method's failure modes are explained in terms of the specific characteristics of this dataset.
 
-**Problem framing.** A vague recruiting task ("find relevant HR candidates") is translated into a well-defined information retrieval problem: a ranked list evaluated by NDCG@k against recruiter-provided ground truth. This kind of problem translation is a core skill that distinguishes engineers who deliver value from those who need tasks fully specified.
+**Principled, data-validated engineering.** Every hyperparameter (`w = 0.7`, `α = 0.9`) was confirmed by grid search. Generation configs are serialized for reproducibility. Code is modular with single-responsibility source files.
 
-**Comparative analysis across six methods.** Rather than picking a single model, the project systematically benchmarks TF-IDF, Word2Vec, FastText, GloVe (with Mittens fine-tuning), BERT (with SimCSE fine-tuning), and E5-small (with SimCSE fine-tuning). Each method's failure modes are explained honestly in terms of the specific characteristics of this dataset, not just listed as abstract limitations.
+**Human-in-the-loop architecture.** The re-ranking module reflects an understanding that production ML systems are not static. Rankings improve as recruiters star candidates, turning the system into a feedback loop.
 
-**Principled, data-validated engineering.** Every hyperparameter (`w = 0.7`, `α = 0.9`) was confirmed by grid search, not chosen by intuition. Generation configs are serialized for reproducibility. Code is modular, with single-responsibility source files and a central config that makes the system easy to extend.
-
-**Human-in-the-loop architecture.** The re-ranking module reflects an understanding that production ML systems are not static artifacts. Rankings improve as recruiters star candidates, turning the system into a feedback loop rather than a one-shot classifier. This design pattern is directly applicable to real-world recruiting tools.
-
-**LLM integration at a practical level.** The Qwen2.5 scorer demonstrates hands-on experience beyond API calls: chat template formatting, prompt strategy selection (zero-shot vs. few-shot vs. chain-of-thought), generation config management, greedy decoding for reproducibility, and regex-based output parsing.
-
-**Stakeholder-ready visualization.** PCA projections, t-SNE cluster plots, and a binary selection grid translate abstract embedding mathematics into visuals that are interpretable without a machine learning background; a critical skill for anyone working at the intersection of ML and business.
+**Practical LLM integration.** Demonstrates hands-on experience beyond API calls: chat template formatting, four prompt strategies (zero-shot, few-shot, chat, chain-of-thought), sequential memory-safe model loading/unloading, and robust output parsing.
 
 ---
 
 ### Skills demonstrated
 
-`Python` · `NLP` · `Information Retrieval` · `Sentence Transformers` · `Hugging Face Transformers` · `scikit-learn` · `gensim` · `TF-IDF` · `Word2Vec` · `FastText` · `GloVe` · `Mittens` · `BERT` · `E5` · `SimCSE` · `LLM Prompting` · `Qwen2.5` · `NDCG` · `PCA` · `t-SNE` · `Matplotlib` · `Pandas` · `NumPy` · `Reproducible ML`
+`Python` · `NLP` · `Information Retrieval` · `Sentence Transformers` · `Hugging Face Transformers` · `scikit-learn` · `gensim` · `TF-IDF` · `Word2Vec` · `FastText` · `GloVe` · `Mittens` · `BERT` · `E5` · `SimCSE` · `LLM Prompting` · `Qwen2.5` · `Gemma 4` · `NDCG` · `PCA` · `t-SNE` · `Matplotlib` · `Pandas` · `NumPy` · `Reproducible ML`
 
 ---
 
-*Built as a deep-dive into NLP-based candidate ranking, exploring the practical trade-offs between classical and neural embedding methods in a real recruiting context.*
+*Built as a deep-dive into NLP-based candidate ranking, exploring the practical trade-offs between classical embedding methods, fine-tuned transformers, and large language model listwise ranking in a real recruiting context.*

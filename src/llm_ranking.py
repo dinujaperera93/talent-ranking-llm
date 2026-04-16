@@ -6,22 +6,21 @@ the full candidate list and is asked to directly rank the top 10.
 
 Techniques compared: Zero-shot, Few-shot, Chat format, Chain of Thought.
 """
-
 import os
 import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import torch
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 HF_TOKEN = os.environ.get("HUGGING_FACE_API_KEY")
-MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-GEN_CONFIG_DIR = ROOT / "models" / "qwen-ranking"
+from .config import GEMMA_MODEL
 
-from .config import STARRED_IDS
+MODEL_ID = GEMMA_MODEL    # default model; override via load_model(model_id=...)
 
 
 # 1. Prompt builders (listwise)
@@ -81,16 +80,30 @@ def build_cot(titles: list) -> str:
 
 # 2. Model loading
 
-def load_model():
-    """Load model & tokenizer, save GenerationConfig for later reuse."""
-    print(f"Loading {MODEL_ID}")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, padding_side="left")
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, token=HF_TOKEN, device_map="auto")
+def load_model(model_id: str = None):
+    """
+    Load model & tokenizer.
+    model_id defaults to MODEL_ID (Gemma-4-E2B-it).
+    Pass a different model_id to load any other HF model (e.g. Qwen).
+    """
+    if model_id is None:
+        model_id = MODEL_ID
+    print(f"Loading {model_id} …")
+    tokenizer = AutoTokenizer.from_pretrained(model_id, token=HF_TOKEN, padding_side="left")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        token=HF_TOKEN,
+        torch_dtype=torch.bfloat16,
+        device_map="cpu",
+        low_cpu_mem_usage=True,
+    )
 
+    slug = model_id.split("/")[-1].lower()
+    config_dir = ROOT / "models" / f"{slug}-ranking"
     gen_config = GenerationConfig(do_sample=False, max_new_tokens=100)
-    GEN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    gen_config.save_pretrained(str(GEN_CONFIG_DIR))
-    print(f"GenerationConfig saved: {GEN_CONFIG_DIR}")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    gen_config.save_pretrained(str(config_dir))
+    print(f"  GenerationConfig saved: {config_dir}")
 
     model.eval()
     return model, tokenizer
@@ -109,6 +122,20 @@ def _generate(model, tokenizer, messages, max_new_tokens=100):
 
 # 4. Run all techniques
 
+def _parse_ids(raw: str, ids: list, n_titles: int) -> list:
+    """
+    Extract up to 10 valid candidate IDs from a model response.
+    Pads with None if fewer than 10 valid numbers found, so every
+    column in the comparison table always has exactly 10 rows.
+    """
+    found = [
+        ids[int(i) - 1]
+        for i in re.findall(r"\b(\d+)\b", raw)
+        if 1 <= int(i) <= n_titles
+    ][:10]
+    return found + [None] * (10 - len(found))
+
+
 def rank_with_llm(df, model=None, tokenizer=None):
     """Run each prompting technique once and return top-10 candidate IDs per technique."""
     if model is None or tokenizer is None:
@@ -118,63 +145,24 @@ def rank_with_llm(df, model=None, tokenizer=None):
     ids    = df["id"].tolist()
     results = {}
 
-    # Zero-shot
-    print("\n── Zero-shot ──")
+    print("\n─ Zero-shot ─")
     raw = _generate(model, tokenizer, [{"role": "user", "content": build_zero_shot(titles)}])
     print(f"  {raw[:120]}")
-    results["Zero-shot"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+    results["Zero-shot"] = _parse_ids(raw, ids, len(titles))
 
-    # Few-shot
-    print("\n── Few-shot ──")
+    print("\n─ Few-shot ─")
     raw = _generate(model, tokenizer, [{"role": "user", "content": build_few_shot(titles)}])
     print(f"  {raw[:120]}")
-    results["Few-shot"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+    results["Few-shot"] = _parse_ids(raw, ids, len(titles))
 
-    # Chat
-    print("\n── Chat ──")
+    print("\n─ Chat ─")
     raw = _generate(model, tokenizer, build_chat_messages(titles))
     print(f"  {raw[:120]}")
-    results["Chat"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+    results["Chat"] = _parse_ids(raw, ids, len(titles))
 
-    # Chain of Thought
-    print("\n── CoT ──")
+    print("\n─ CoT ─")
     raw = _generate(model, tokenizer, [{"role": "user", "content": build_cot(titles)}], max_new_tokens=300)
     print(f"  {raw[:120]}")
-    results["CoT"] = [ids[int(i)-1] for i in re.findall(r"\b(\d+)\b", raw) if 1 <= int(i) <= len(titles)][:10]
+    results["CoT"] = _parse_ids(raw, ids, len(titles))
 
     return results
-
-
-# 5. Comparison chart
-
-def plot_scores(rankings: dict, out_path=None):
-    """
-    Bar chart: how many recruiter-starred candidates each technique
-    found in its top 10 (higher = better).
-    """
-    starred = set(STARRED_IDS)
-    techniques = list(rankings.keys())
-    hits = [sum(1 for cid in rankings[t] if cid in starred) for t in techniques]
-
-    _, ax = plt.subplots(figsize=(7, 4))
-    bars = ax.bar(techniques, hits, color=["#4878cf", "#e8604c", "#6acc65", "#ce7e45"], alpha=0.85)
-
-    for bar, h in zip(bars, hits):
-        ax.text(bar.get_x() + bar.get_width() / 2, h + 0.05, str(h),
-                ha="center", va="bottom", fontweight="bold")
-
-    ax.set_ylim(0, 10)
-    ax.axhline(10, color="grey", linestyle="--", linewidth=0.8, label="Max possible (10)")
-    ax.set_ylabel("Starred candidates found in top 10")
-    ax.set_title(f"Listwise Ranking — {MODEL_ID}", fontweight="bold")
-    ax.legend(fontsize=8)
-    ax.grid(axis="y", linestyle="--", alpha=0.4)
-
-    plt.tight_layout()
-    if out_path is None:
-        out_path = ROOT / "outputs" / "prompt_comparison.png"
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"Saved: {out_path}")
-    plt.close()

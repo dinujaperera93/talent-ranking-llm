@@ -23,9 +23,12 @@ import sys
 from pathlib import Path
 
 try:
-    ROOT = Path(__file__).resolve().parent.parent  # src/ -> project root (running as script)
+    ROOT = Path(__file__).resolve().parent.parent      # running as script: src/ -> project root
 except NameError:
-    ROOT = Path().resolve().parent                 # notebooks/ -> project root (running as notebook)
+    try:
+        ROOT = Path(__vsc_ipynb_file__).resolve().parent.parent  # VS Code notebook: notebooks/ -> project root
+    except NameError:
+        ROOT = Path().resolve().parent                 # fallback: Jupyter launched from notebooks/
 
 sys.path.insert(0, str(ROOT))
 
@@ -34,6 +37,7 @@ from src.config import DATA_FILE
 from src.data_loader import load_data
 from src.preprocessing import preprocess
 from src.compare_embeddings import METHODS, visualize
+from src.visualisation import build_table
 
 df = load_data(ROOT / DATA_FILE)
 df = preprocess(df)
@@ -64,14 +68,14 @@ df[["job_title", "job_title_clean", "connections_raw", "connections_norm"]].head
 # Each method embeds candidate job titles and target keywords into vector space,
 # then computes cosine similarity. The candidate's score = max similarity across all targets.
 #
-# | Method    | Type              | Trained on          | Key property |
-# |-----------|-------------------|---------------------|--------------|
-# | TF-IDF    | Bag-of-words      | This corpus          | Exact word match, weighted by rarity |
-# | Word2Vec  | Word embeddings   | This corpus          | Context-based, avg pooling |
-# | FastText  | Subword embeddings| This corpus          | Handles rare/misspelled words |
-# | GloVe     | Word embeddings   | Wikipedia + Gigaword| Pretrained, reliable vectors |
-# | BERT      | Transformer       | Large pretraining   | Full sentence context, symmetric |
-# | E5-small  | Transformer       | Large pretraining   | Designed for retrieval, asymmetric |
+# | Method       | Type               | Trained on                                   | Key property |
+# |--------------|--------------------|--------------------------------------------- |--------------|
+# | TF-IDF       | Bag-of-words       | This corpus                                  | Exact word match, weighted by rarity |
+# | Word2Vec     | Word embeddings    | This corpus                                  | Context-based, avg pooling |
+# | FastText     | Subword embeddings | This corpus                                  | Handles rare/misspelled words |
+# | GloVe-FT     | Word embeddings    | Wikipedia + Gigaword → fine-tuned (Mittens)  | Pretrained vectors adapted to job-title vocab |
+# | BERT-FT      | Transformer        | Large pretraining → fine-tuned (SimCSE)      | Full sentence context, domain-adapted |
+# | E5-small-FT  | Transformer        | Large pretraining → fine-tuned (SimCSE)      | Retrieval-optimized, asymmetric query/passage |
 
 # %% [markdown]
 # ## TF-IDF
@@ -153,7 +157,7 @@ df[["id", "job_title", "fit_ft"]].sort_values("fit_ft", ascending=False).head(10
 # - **Still word-level averaging:** Same word-order and negation blindness as Word2Vec.
 
 # %%
-df["fit_glove"] = METHODS["GloVe"](df)
+df["fit_glove"] = METHODS["GloVe-FT"](df)
 df[["id", "job_title", "fit_glove"]].sort_values("fit_glove", ascending=False).head(10)
 
 # %% [markdown]
@@ -175,7 +179,7 @@ df[["id", "job_title", "fit_glove"]].sort_values("fit_glove", ascending=False).h
 # For asymmetric retrieval (short query vs. longer document), E5 is better suited.
 
 # %%
-df["fit_bert"] = METHODS["BERT"](df)
+df["fit_bert"] = METHODS["BERT-FT"](df)
 df[["id", "job_title", "fit_bert"]].sort_values("fit_bert", ascending=False).head(10)
 
 # %% [markdown]
@@ -200,7 +204,7 @@ df[["id", "job_title", "fit_bert"]].sort_values("fit_bert", ascending=False).hea
 # e5-large-v2 would be more accurate but slower — for ~100 candidates the small variant is sufficient.
 
 # %%
-df["fit_e5"] = METHODS["E5-small"](df)
+df["fit_e5"] = METHODS["E5-small-FT"](df)
 df[["id", "job_title", "fit_e5"]].sort_values("fit_e5", ascending=False).head(10)
 
 # %% [markdown]
@@ -236,3 +240,32 @@ display(Image(filename=str(ROOT / "outputs" / "embedding_space_pca.png")))
 
 # %%
 display(Image(filename=str(ROOT / "outputs" / "embedding_space_tsne.png")))
+
+# %% [markdown]
+# ## Candidate Comparison Table
+#
+# Top-10 candidate IDs selected by each method — 14 columns total.
+#
+# **Embedding methods (6):** ranked by similarity score blended with `connections_norm` (w=0.7).
+#
+# | Column | Method |
+# |--------|--------|
+# | TF-IDF | Bag-of-words similarity |
+# | Word2Vec | Corpus-trained word embeddings |
+# | FastText | Subword embeddings |
+# | GloVe-FT | Pretrained GloVe + fine-tuned |
+# | BERT-FT | Transformer sentence embeddings |
+# | E5-small-FT | Retrieval-optimised transformer |
+#
+# **LLM methods (8):** top-10 from 4 prompting techniques × 2 models (Qwen-0.5B, Gemma-4-E2B-it).
+#
+# | Technique | Description |
+# |-----------|-------------|
+# | Zero-shot | Plain instruction, no examples |
+# | Few-shot | Small worked example shown before the question |
+# | Chat | Framed as a user ↔ assistant conversation |
+# | CoT | Model reasons step-by-step before answering |
+
+# %%
+tbl = build_table(df)
+tbl

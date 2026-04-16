@@ -1,7 +1,6 @@
 DATA_FILE = "data/PotentialTalents.csv"
 TARGET_KEYWORDS = ["aspiring human resources", "seeking human resources"]
 CONNECTIONS_MAX = 500
-DISPLAY_COLS = ["id", "job_title", "connections_norm", "fit"]
 
 # Ground truth: candidates starred by the recruiter
 STARRED_IDS = [27, 28, 29, 30, 40, 10, 62, 53, 75, 97, 73, 58, 33, 17, 3,
@@ -12,6 +11,10 @@ BERT_MODEL = "all-MiniLM-L6-v2"
 E5_MODEL = "intfloat/e5-small-v2"
 GLOVE_MODEL = "glove-wiki-gigaword-100"
 
+# LLM models
+QWEN_MODEL  = "Qwen/Qwen2.5-0.5B-Instruct"
+GEMMA_MODEL = "google/gemma-4-E2B-it"
+
 # Hyperparameters (confirmed optimal by grid search)
-RANK_WEIGHT = 0.7    # title similarity weight in rank_candidates
+RANK_WEIGHT  = 0.7   # title similarity weight in rank_candidates
 RERANK_ALPHA = 0.9   # starred-similarity blend weight in rerank

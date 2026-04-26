@@ -5,12 +5,16 @@ Instead of scoring candidates one-by-one, each prompting technique receives
 the full candidate list and is asked to directly rank the top 10.
 
 Techniques compared: Zero-shot, Few-shot, Chat format, Chain of Thought.
+
+Models:
+  Qwen   — Qwen2.5-1.5B-Instruct, loaded locally via HuggingFace transformers
+  Gemma  — gemma-4-E2B-it, loaded locally via HuggingFace transformers
+  Llama  — llama3.1-8b, served via Cerebras free API
 """
 import os
 import re
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import torch
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
@@ -18,9 +22,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 HF_TOKEN = os.environ.get("HUGGING_FACE_API_KEY")
-from .config import GEMMA_MODEL
 
-MODEL_ID = GEMMA_MODEL    # default model; override via load_model(model_id=...)
+from .config import CEREBRAS_MODEL, QWEN_MODEL
 
 
 # 1. Prompt builders (listwise)
@@ -81,13 +84,9 @@ def build_cot(titles: list) -> str:
 # 2. Model loading
 
 def load_model(model_id: str = None):
-    """
-    Load model & tokenizer.
-    model_id defaults to MODEL_ID (Gemma-4-E2B-it).
-    Pass a different model_id to load any other HF model (e.g. Qwen).
-    """
+    """Load a HuggingFace model locally. Defaults to Qwen."""
     if model_id is None:
-        model_id = MODEL_ID
+        model_id = QWEN_MODEL
     print(f"Loading {model_id} …")
     tokenizer = AutoTokenizer.from_pretrained(model_id, token=HF_TOKEN, padding_side="left")
     model = AutoModelForCausalLM.from_pretrained(
@@ -103,16 +102,15 @@ def load_model(model_id: str = None):
     gen_config = GenerationConfig(do_sample=False, max_new_tokens=100)
     config_dir.mkdir(parents=True, exist_ok=True)
     gen_config.save_pretrained(str(config_dir))
-    print(f"  GenerationConfig saved: {config_dir}")
 
     model.eval()
     return model, tokenizer
 
 
-# 3. Inference
+# 3. Generate functions
 
-def _generate(model, tokenizer, messages, max_new_tokens=100):
-    """Send messages to the model and return the generated text."""
+def _generate_local(model, tokenizer, messages, max_new_tokens=100):
+    """Run inference on a locally loaded HF model."""
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     gen_config = GenerationConfig(do_sample=False, max_new_tokens=max_new_tokens)
@@ -120,49 +118,76 @@ def _generate(model, tokenizer, messages, max_new_tokens=100):
     return tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
 
-# 4. Run all techniques
+def _generate_cerebras(api_key, messages, max_new_tokens=100):
+    """Call Cerebras API (OpenAI-compatible REST) with Llama 3.1 8B."""
+    import requests
+    resp = requests.post(
+        "https://api.cerebras.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": CEREBRAS_MODEL,
+            "messages": messages,
+            "max_tokens": max_new_tokens,
+            "temperature": 0,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def cerebras_client():
+    """Return the CEREBRAS_API_KEY string (used directly in REST calls)."""
+    key = os.environ.get("CEREBRAS_API_KEY")
+    if not key:
+        raise ValueError("CEREBRAS_API_KEY not set in .env")
+    return key
+
+
+# 4. Parse output
 
 def _parse_ids(raw: str, ids: list, n_titles: int) -> list:
     """
     Extract up to 10 valid candidate IDs from a model response.
-    Pads with None if fewer than 10 valid numbers found, so every
-    column in the comparison table always has exactly 10 rows.
+    Pads with None if fewer than 10 valid numbers found.
     """
     found = [
-        ids[int(i) - 1]
+        int(ids[int(i) - 1])
         for i in re.findall(r"\b(\d+)\b", raw)
         if 1 <= int(i) <= n_titles
     ][:10]
     return found + [None] * (10 - len(found))
 
 
-def rank_with_llm(df, model=None, tokenizer=None):
-    """Run each prompting technique once and return top-10 candidate IDs per technique."""
-    if model is None or tokenizer is None:
-        model, tokenizer = load_model()
+# 5. Run all techniques
+
+def rank_with_llm(df, model=None, tokenizer=None, generate_fn=None) -> dict:
+    """
+    Run 4 prompting techniques and return top-10 candidate IDs per technique.
+
+    Pass either:
+      model + tokenizer  — local HF model inference
+      generate_fn        — callable(messages, max_new_tokens) -> str
+    """
+    if generate_fn is None:
+        if model is None or tokenizer is None:
+            model, tokenizer = load_model()
+        generate_fn = lambda msgs, max_tok: _generate_local(model, tokenizer, msgs, max_tok)
 
     titles = df["job_title_clean"].tolist()
     ids    = df["id"].tolist()
     results = {}
 
-    print("\n─ Zero-shot ─")
-    raw = _generate(model, tokenizer, [{"role": "user", "content": build_zero_shot(titles)}])
-    print(f"  {raw[:120]}")
-    results["Zero-shot"] = _parse_ids(raw, ids, len(titles))
-
-    print("\n─ Few-shot ─")
-    raw = _generate(model, tokenizer, [{"role": "user", "content": build_few_shot(titles)}])
-    print(f"  {raw[:120]}")
-    results["Few-shot"] = _parse_ids(raw, ids, len(titles))
-
-    print("\n─ Chat ─")
-    raw = _generate(model, tokenizer, build_chat_messages(titles))
-    print(f"  {raw[:120]}")
-    results["Chat"] = _parse_ids(raw, ids, len(titles))
-
-    print("\n─ CoT ─")
-    raw = _generate(model, tokenizer, [{"role": "user", "content": build_cot(titles)}], max_new_tokens=300)
-    print(f"  {raw[:120]}")
-    results["CoT"] = _parse_ids(raw, ids, len(titles))
+    tasks = [
+        ("Zero-shot", [{"role": "user", "content": build_zero_shot(titles)}], 100),
+        ("Few-shot",  [{"role": "user", "content": build_few_shot(titles)}],  100),
+        ("Chat",      build_chat_messages(titles),                             100),
+        ("CoT",       [{"role": "user", "content": build_cot(titles)}],       300),
+    ]
+    for name, messages, max_tok in tasks:
+        print(f"\n─ {name} ─")
+        raw = generate_fn(messages, max_tok)
+        print(f"  {raw[:120]}")
+        results[name] = _parse_ids(raw, ids, len(titles))
 
     return results

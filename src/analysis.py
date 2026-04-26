@@ -244,7 +244,7 @@ display(Image(filename=str(ROOT / "outputs" / "embedding_space_tsne.png")))
 # %% [markdown]
 # ## Candidate Comparison Table
 #
-# Top-10 candidate IDs selected by each method — 14 columns total.
+# Top-10 candidate IDs selected by each method — 18 columns total.
 #
 # **Embedding methods (6):** ranked by similarity score blended with `connections_norm` (w=0.7).
 #
@@ -257,7 +257,7 @@ display(Image(filename=str(ROOT / "outputs" / "embedding_space_tsne.png")))
 # | BERT-FT | Transformer sentence embeddings |
 # | E5-small-FT | Retrieval-optimised transformer |
 #
-# **LLM methods (8):** top-10 from 4 prompting techniques × 2 models (Qwen-0.5B, Gemma-4-E2B-it).
+# **LLM methods (12):** top-10 from 4 prompting techniques × 3 models (Qwen-1.5B, Gemma-4-E2B-it, Llama-3.1-8B).
 #
 # | Technique | Description |
 # |-----------|-------------|

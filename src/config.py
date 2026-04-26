@@ -12,8 +12,9 @@ E5_MODEL = "intfloat/e5-small-v2"
 GLOVE_MODEL = "glove-wiki-gigaword-100"
 
 # LLM models
-QWEN_MODEL  = "Qwen/Qwen2.5-0.5B-Instruct"
-GEMMA_MODEL = "google/gemma-4-E2B-it"
+QWEN_MODEL   = "Qwen/Qwen2.5-1.5B-Instruct"  # loaded locally
+GEMMA_MODEL  = "google/gemma-4-E2B-it"         # loaded locally
+CEREBRAS_MODEL = "llama3.1-8b"                 # Cerebras free API
 
 # Hyperparameters (confirmed optimal by grid search)
 RANK_WEIGHT  = 0.7   # title similarity weight in rank_candidates

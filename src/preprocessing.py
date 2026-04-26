@@ -1,9 +1,13 @@
+import re
+
 import nltk
 nltk.download("stopwords", quiet=True)
 nltk.download("wordnet", quiet=True)
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from .config import CONNECTIONS_MAX, TARGET_KEYWORDS
+
+_ABBREV_RE = re.compile(r"\b[A-Z]{2,}\b")
 
 _STOP_WORDS = set(stopwords.words("english"))
 _LEMMATIZER = WordNetLemmatizer()
@@ -40,4 +44,11 @@ def preprocess(df):
     df["job_title_clean"] = df["job_title"].apply(clean_job_title)
     df["connections_raw"] = df["connection"].apply(parse_connections)
     df["connections_norm"] = (df["connections_raw"] / CONNECTIONS_MAX).clip(0, 1)
+
+    print("Job title value counts:")
+    print(df["job_title"].value_counts().to_string())
+
+    abbrevs = sorted({m for title in df["job_title"].astype(str) for m in _ABBREV_RE.findall(title)})
+    print(f"\nAbbreviations found in dataset ({len(abbrevs)}): {', '.join(abbrevs) if abbrevs else 'none'}")
+
     return df

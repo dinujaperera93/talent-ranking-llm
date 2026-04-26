@@ -1,6 +1,6 @@
 # Talent Spotting & Candidate Ranking System
 
-> An end-to-end NLP pipeline that benchmarks six embedding strategies — from classical bag-of-words to fine-tuned transformers — augmented with two large language models and a human-in-the-loop feedback mechanism, to automatically surface the most relevant HR candidates from a raw applicant pool.
+> An end-to-end NLP pipeline that benchmarks six embedding strategies — from classical bag-of-words to fine-tuned transformers — augmented with three large language models and a human-in-the-loop feedback mechanism, to automatically surface the most relevant HR candidates from a raw applicant pool.
 
 ---
 
@@ -100,17 +100,18 @@ Raw CSV Data
              │
              ▼
 ┌──────────────────────────────────────────────┐
-│  LLM Listwise Ranking                        │  llm_ranking.py
-│  Qwen2.5-0.5B  ×  4 prompting techniques    │
-│  Gemma-4-E2B-it  ×  4 prompting techniques  │
-│  Zero-shot | Few-shot | Chat | CoT           │
+│  LLM Listwise Ranking                         │  llm_ranking.py
+│  Qwen2.5-1.5B    ×  4 prompting techniques   │
+│  Gemma-4-E2B-it  ×  4 prompting techniques   │
+│  Llama-3.1-8B   ×  4 prompting techniques   │
+│  Zero-shot | Few-shot | Chat | CoT            │
 └────────────┬─────────────────────────────────┘
              │
              ▼
 ┌──────────────────────────────────────┐
 │  Candidate Comparison Table          │  visualisation.py
-│  14 columns × 10 rows                │
-│  (6 embedding + 8 LLM results)       │
+│  18 columns × 10 rows                │
+│  (6 embedding + 12 LLM results)      │
 │  Saved to outputs/candidate_table.csv│
 └──────────────────────────────────────┘
 ```
@@ -193,14 +194,15 @@ fit_new = (1 - α) × fit_old + α × starred_similarity     [α = 0.9]
 
 **File:** `src/llm_ranking.py`
 
-Instead of scoring candidates one-by-one, the full candidate list is given to the model and it is asked to directly select the top 10 HR-relevant candidates. Two models are compared across four prompting techniques:
+Instead of scoring candidates one-by-one, the full candidate list is given to the model and it is asked to directly select the top 10 HR-relevant candidates. Three models are compared across four prompting techniques:
 
 **Models:**
 
-| Model | Parameters | Memory (bfloat16) |
+| Model | Parameters | Access |
 |---|---|---|
-| `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | ~1 GB |
-| `google/gemma-4-E2B-it` | ~2.3B effective / 5.1B total | ~15 GB |
+| `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | Local HF model (~3 GB bfloat16) |
+| `google/gemma-4-E2B-it` | ~2.3B effective / 5.1B total | Local HF model (~15 GB bfloat16) |
+| `meta-llama/Llama-3.1-8B-Instruct` | 8B | Cerebras free API |
 
 **Prompting techniques:**
 
@@ -233,13 +235,14 @@ NDCG@k = DCG@k / IDCG@k          (range: 0.0 to 1.0)
 
 **File:** `src/visualisation.py`
 
-Produces a **14-column × 10-row DataFrame** showing the top-10 candidate IDs selected by each method:
+Produces an **18-column × 10-row DataFrame** showing the top-10 candidate IDs selected by each method:
 
 | Columns | Source |
 |---|---|
 | TF-IDF, Word2Vec, FastText, GloVe-FT, BERT-FT, E5-small-FT | Embedding similarity + connections blend |
-| Qwen-Zero-shot, Qwen-Few-shot, Qwen-Chat, Qwen-CoT | Qwen2.5-0.5B-Instruct |
+| Qwen-Zero-shot, Qwen-Few-shot, Qwen-Chat, Qwen-CoT | Qwen2.5-1.5B-Instruct |
 | Gemma-Zero-shot, Gemma-Few-shot, Gemma-Chat, Gemma-CoT | Gemma-4-E2B-it |
+| Llama-Zero-shot, Llama-Few-shot, Llama-Chat, Llama-CoT | Llama-3.1-8B (Cerebras) |
 
 Saved to `outputs/candidate_table.csv`.
 
@@ -262,8 +265,9 @@ Saved to `outputs/candidate_table.csv`.
 
 | Model | Size | Prompting | Notes |
 |---|---|---|---|
-| `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | Zero-shot, Few-shot, Chat, CoT | Lightweight; tends to default to sequential output on small models |
+| `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | Zero-shot, Few-shot, Chat, CoT | Lightweight local model; loaded and unloaded from CPU RAM |
 | `google/gemma-4-E2B-it` | 2.3B eff / 5.1B total | Zero-shot, Few-shot, Chat, CoT | Stronger instruction following; fits in ~15 GB bfloat16 on CPU |
+| `meta-llama/Llama-3.1-8B-Instruct` | 8B | Zero-shot, Few-shot, Chat, CoT | Served via Cerebras free API; no local memory needed |
 
 ---
 
@@ -277,7 +281,7 @@ Saved to `outputs/candidate_table.csv`.
 | `w = 0.7` for ranking blend | Grid-search validated; title relevance dominates over connections |
 | `α = 0.9` for re-ranking blend | Grid-search validated; starred-candidate similarity is the dominant signal |
 | Listwise LLM ranking | More natural than pointwise scoring; models the full ranking task directly |
-| Sequential model loading | Qwen unloaded before Gemma loads to stay within CPU RAM budget |
+| Sequential model loading | Qwen unloaded before Gemma loads; both unloaded before Cerebras API call, to stay within CPU RAM budget |
 | `_parse_ids` padding to 10 | Ensures DataFrame consistency when a model returns fewer than 10 valid IDs |
 | Greedy decoding | Ensures deterministic, reproducible rankings across runs |
 
@@ -292,14 +296,14 @@ Saved to `outputs/candidate_table.csv`.
 ├── data/
 │   └── PotentialTalents.csv    # Raw candidate dataset (104 records)
 ├── models/
-│   ├── qwen2.5-0.5b-instruct-ranking/
+│   ├── qwen2.5-1.5b-instruct-ranking/
 │   │   └── generation_config.json
 │   └── gemma-4-e2b-it-ranking/
 │       └── generation_config.json
 ├── outputs/
 │   ├── embedding_space_pca.png
 │   ├── embedding_space_tsne.png
-│   └── candidate_table.csv     # 14-column comparison table
+│   └── candidate_table.csv     # 18-column comparison table
 ├── src/
 │   ├── config.py               # Paths, model IDs, hyperparameters, ground truth
 │   ├── data_loader.py          # CSV ingestion
@@ -307,8 +311,8 @@ Saved to `outputs/candidate_table.csv`.
 │   ├── compare_embeddings.py   # All 6 embedding methods + PCA/t-SNE visualizations
 │   ├── ranking.py              # Blended fit scoring (title similarity + connections)
 │   ├── reranking.py            # Human-in-the-loop re-ranking via recruiter feedback
-│   ├── llm_ranking.py          # LLM listwise ranking (Qwen + Gemma, 4 prompt techniques)
-│   ├── visualisation.py        # Candidate comparison table (14 columns × 10 rows)
+│   ├── llm_ranking.py          # LLM listwise ranking (Qwen + Gemma + Llama-3.1, 4 prompt techniques)
+│   ├── visualisation.py        # Candidate comparison table (18 columns × 10 rows)
 │   ├── evaluation.py           # NDCG@k evaluation metric
 │   └── analysis.py             # Jupytext notebook source
 └── notebooks/
@@ -325,10 +329,11 @@ Saved to `outputs/candidate_table.csv`.
 pip install -r requirements.toml
 ```
 
-**2. Set your Hugging Face token** (required for Gemma model download)
+**2. Set API keys** (required for model access)
 
 ```bash
-echo "HUGGING_FACE_API_KEY=your_token_here" > .env
+echo "HUGGING_FACE_API_KEY=your_hf_token_here" > .env
+echo "CEREBRAS_API_KEY=your_cerebras_key_here" >> .env
 ```
 
 **3. Run the full pipeline**
@@ -340,9 +345,10 @@ python main.py
 This will:
 - Load and preprocess the 104-candidate dataset
 - Run all six embedding methods
-- Load Qwen2.5-0.5B → run 4 prompting techniques → unload
+- Load Qwen2.5-1.5B → run 4 prompting techniques → unload
 - Load Gemma-4-E2B-it → run 4 prompting techniques → unload
-- Print and save the 14-column candidate comparison table to `outputs/candidate_table.csv`
+- Call Cerebras API (Llama-3.1-8B) → run 4 prompting techniques
+- Print and save the 18-column candidate comparison table to `outputs/candidate_table.csv`
 
 **4. Open the notebook**
 
@@ -370,7 +376,7 @@ The table (`outputs/candidate_table.csv`) shows the top-10 candidate IDs selecte
 
 This is an **original end-to-end NLP engineering investigation**, covering the full machine learning development lifecycle with deliberate, documented decisions at every stage.
 
-**Comparative analysis across eight models.** Six embedding methods and two LLMs (each tested with four prompting techniques) are benchmarked systematically, not just implemented. Each method's failure modes are explained in terms of the specific characteristics of this dataset.
+**Comparative analysis across eighteen methods.** Six embedding methods and three LLMs (each tested with four prompting techniques) are benchmarked systematically, not just implemented. Each method's failure modes are explained in terms of the specific characteristics of this dataset.
 
 **Principled, data-validated engineering.** Every hyperparameter (`w = 0.7`, `α = 0.9`) was confirmed by grid search. Generation configs are serialized for reproducibility. Code is modular with single-responsibility source files.
 
@@ -382,7 +388,7 @@ This is an **original end-to-end NLP engineering investigation**, covering the f
 
 ### Skills demonstrated
 
-`Python` · `NLP` · `Information Retrieval` · `Sentence Transformers` · `Hugging Face Transformers` · `scikit-learn` · `gensim` · `TF-IDF` · `Word2Vec` · `FastText` · `GloVe` · `Mittens` · `BERT` · `E5` · `SimCSE` · `LLM Prompting` · `Qwen2.5` · `Gemma 4` · `NDCG` · `PCA` · `t-SNE` · `Matplotlib` · `Pandas` · `NumPy` · `Reproducible ML`
+`Python` · `NLP` · `Information Retrieval` · `Sentence Transformers` · `Hugging Face Transformers` · `scikit-learn` · `gensim` · `TF-IDF` · `Word2Vec` · `FastText` · `GloVe` · `Mittens` · `BERT` · `E5` · `SimCSE` · `LLM Prompting` · `Qwen2.5` · `Gemma 4` · `Llama 3.3` · `Cerebras` · `NDCG` · `PCA` · `t-SNE` · `Matplotlib` · `Pandas` · `NumPy` · `Reproducible ML`
 
 ---
 

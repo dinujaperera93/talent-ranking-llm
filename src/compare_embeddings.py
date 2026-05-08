@@ -212,7 +212,7 @@ def embed_fasttext(df: pd.DataFrame) -> np.ndarray:
 # co-occurrence statistics computed from your corpus.
 # Words that appear together in your job titles pull closer in vector space.
 def embed_glove_finetuned(df: pd.DataFrame) -> np.ndarray:
-    from mittens import Mittens
+    from mittens.np_mittens import Mittens
     from gensim.models import KeyedVectors
     import gensim.downloader as gensim_dl
 
@@ -362,7 +362,7 @@ def _get_fasttext(cands, targets):
     return normalize(_avg_word_vecs(cands + targets, model, DIM))
 
 def _get_glove_ft(cands, targets):
-    from mittens import Mittens
+    from mittens.np_mittens import Mittens
     from gensim.models import KeyedVectors
     import gensim.downloader as gensim_dl
     DIM = 100

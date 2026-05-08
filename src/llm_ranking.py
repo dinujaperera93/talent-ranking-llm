@@ -10,6 +10,7 @@ Models:
   Qwen   — Qwen2.5-1.5B-Instruct, loaded locally via HuggingFace transformers
   Gemma  — gemma-4-E2B-it, loaded locally via HuggingFace transformers
   Llama  — llama3.1-8b, served via Cerebras free API
+  GLM    — zhipuai/glm-4-9b-chat, served via NVIDIA NIM API
 """
 import os
 import re
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 HF_TOKEN = os.environ.get("HUGGING_FACE_API_KEY")
 
-from .config import CEREBRAS_MODEL, QWEN_MODEL
+from .config import CEREBRAS_MODEL, NVIDIA_MODEL, QWEN_MODEL
 
 
 # 1. Prompt builders (listwise)
@@ -141,6 +142,32 @@ def cerebras_client():
     key = os.environ.get("CEREBRAS_API_KEY")
     if not key:
         raise ValueError("CEREBRAS_API_KEY not set in .env")
+    return key
+
+
+def _generate_nvidia(api_key, messages, max_new_tokens=100):
+    """Call NVIDIA NIM API (OpenAI-compatible) with GLM-4-9B."""
+    import requests
+    resp = requests.post(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": NVIDIA_MODEL,
+            "messages": messages,
+            "max_tokens": max_new_tokens,
+            "temperature": 0,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def nvidia_client():
+    """Return the NVIDIA_API_KEY string (used directly in REST calls)."""
+    key = os.environ.get("NVIDIA_API_KEY")
+    if not key:
+        raise ValueError("NVIDIA_API_KEY not set in .env")
     return key
 
 

@@ -1,5 +1,0 @@
-{
-  "do_sample": false,
-  "max_new_tokens": 100,
-  "transformers_version": "5.6.0.dev0"
-}
